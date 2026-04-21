@@ -205,6 +205,74 @@ The HTML files embed the data in a `<script type="application/json">`
 block; no external fonts, images, or scripts are loaded. They render
 offline.
 
+## Deployment (Cloudflare Pages)
+
+Two scripts wrap the publish flow:
+
+- **`deploy.sh`** — pushes the current `reports/` directory to a
+  Cloudflare Pages project via `wrangler pages deploy`. Auto-installs
+  `wrangler` via `npm` if missing, pre-creates the Pages project
+  idempotently on first run, loads `CLOUDFLARE_API_TOKEN` from `.env`
+  if present.
+- **`run.sh`** — cron-friendly wrapper: regenerate batch, then deploy.
+  Flock-based concurrency guard, timestamped logging under `logs/`,
+  `--dry-run` / `--skip-batch` / `--skip-deploy` flags. See
+  `./run.sh --help` for cron examples.
+
+### Cloudflare API token permissions
+
+Create a scoped token at <https://dash.cloudflare.com/profile/api-tokens>
+(**Create Token → Custom token**) with these permissions:
+
+| Section | Resource | Access |
+|---------|----------|--------|
+| Account | Cloudflare Pages | Edit |
+| User    | Memberships      | Read |
+| User    | User Details     | Read |
+| Zone    | Zone             | Read *(only if attaching a custom domain)* |
+
+Resource scopes:
+
+- **Account Resources** → *Include* → your specific account
+- **Zone Resources** → *Include → Specific zone* → your domain *(only if
+  attaching a custom domain)*
+
+The Pages-only token that some guides suggest (`Account → Cloudflare
+Pages → Edit` alone) is insufficient: `wrangler` also reads `User →
+Memberships` and `User → User Details` during auth, and returns
+`Authentication error [code: 10000]` or
+`NoDefaultValueProvided` if those scopes are missing.
+
+If you plan to use a custom domain on top of the default
+`*.pages.dev` URL, also add `Zone → Zone → Read` and include the
+target zone in *Zone Resources*.
+
+### IP allowlist gotcha
+
+Cloudflare tokens can be restricted to specific source IPs. If the
+deploy runs from a different machine than the one the token was minted
+on (e.g. a VPS, CI runner, relocated laptop), the API call fails with:
+
+```
+Cannot use the access token from location: <IP>  [code: 9109]
+```
+
+Fix: **Dash → API Tokens → (your token) → Edit** — add the deploy
+machine's egress IP to *IP Address Filtering*, or remove the
+restriction.
+
+### Quickstart
+
+```bash
+cp .env.example .env
+# Edit .env: paste your cf_pat_... token as CLOUDFLARE_API_TOKEN
+./deploy.sh --dry-run          # smoke-test token + project resolution
+./deploy.sh                    # first real deploy
+```
+
+Subsequent deploys hit the same `*.pages.dev` URL. First run
+auto-creates the Pages project.
+
 ## Development notes
 
 The tool is deliberately single-file; no dependencies outside the standard
