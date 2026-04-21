@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import html as html_mod
 import json
+import re
 import shlex
 import subprocess
 import sys
@@ -59,6 +60,11 @@ ALWAYS_ELIGIBLE_POSE_STATUSES = frozenset(
 
 DEFAULT_CORE_CMD = "docker exec dashmate_2d59c0c6_mainnet-core-1 dash-cli"
 DEFAULT_CORE_CMD_FALLBACK = "dash-cli"
+
+# Matches per-validator report files written by batch mode.
+# Only files with this exact shape are eligible for stale-cleanup.
+# Unrelated files the user placed in reports/ are NOT touched.
+REPORT_FILE_RE = re.compile(r"^[0-9a-f]{8}_[0-9]{8}T[0-9]{6}Z\.(json|html)$")
 
 # ---------------------------------------------------------------------------
 # Small helpers
@@ -3015,12 +3021,47 @@ def _bisect_deregistration_height(
     return answer
 
 
+def cleanup_stale_reports(out_dir: Path) -> None:
+    """Delete per-validator report files from previous batch runs.
+
+    Only files matching REPORT_FILE_RE (<8-hex>_<YYYYMMDDThhmmssZ>.{json,html})
+    are removed. index.html, summary.json, subdirectories, and anything else
+    the user may have placed in out_dir are left untouched.
+    """
+    if not out_dir.is_dir():
+        return  # first run — nothing to clean
+
+    targets = [
+        f for f in out_dir.iterdir() if f.is_file() and REPORT_FILE_RE.match(f.name)
+    ]
+    if not targets:
+        return
+
+    print(
+        f"[batch] cleanup: removing {len(targets)} stale per-validator reports from {out_dir}/",
+        file=sys.stderr,
+        flush=True,
+    )
+    for path in targets:
+        try:
+            path.unlink()
+        except OSError as exc:
+            print(
+                f"[batch] cleanup: warning — could not remove {path.name}: {exc}",
+                file=sys.stderr,
+                flush=True,
+            )
+
+
 def run_batch(args: argparse.Namespace, out_dir: Path) -> int:
     td = TenderdashClient(args.tenderdash_url)
     core = detect_core_cmd(args.core_cmd)
     vlog(f"using core: {core.cmd}")
 
     t_batch_start = time.monotonic()
+
+    if not args.keep_history:
+        cleanup_stale_reports(out_dir)
 
     # Build the shared cache first — we need core_lo to enumerate the "who was
     # a member of the Evo pool at any point in the window" union.
@@ -3376,6 +3417,13 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="In --all-platform mode, skip validators with an existing "
         "up-to-date report (matching window).",
+    )
+    p.add_argument(
+        "--keep-history",
+        action="store_true",
+        help="In --all-platform mode, preserve per-validator reports from "
+        "prior runs instead of wiping them at batch start. Useful for "
+        "comparing results across runs.",
     )
     p.add_argument(
         "--from-summary",

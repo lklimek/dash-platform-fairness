@@ -199,6 +199,8 @@ reports/summary.json
 reports/index.html
 ```
 
+By default, stale per-validator reports from prior runs are removed at the start of each batch. Use `--keep-history` to preserve them for comparison across runs.
+
 The HTML files embed the data in a `<script type="application/json">`
 block; no external fonts, images, or scripts are loaded. They render
 offline.
