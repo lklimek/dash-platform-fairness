@@ -2,3 +2,6 @@ reports/
 __pycache__/
 *.pyc
 .ruff_cache/
+.env
+.env.*
+!.env.example

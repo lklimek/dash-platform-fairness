@@ -74,11 +74,18 @@ Options:
   -h, --help            Show this help and exit.
   -n, --dry-run         Print what would run without deploying.
 
+  Alternative: put KEY=VALUE pairs in a \`.env\` file next to the script or
+  in the current directory instead of exporting in the shell.
+
 Examples:
   export CLOUDFLARE_API_TOKEN=cf_pat_...
   ./deploy.sh
 
   CF_PROJECT_NAME=fairness-staging CF_BRANCH=preview ./deploy.sh
+
+  # Or use a .env file:
+  echo 'CLOUDFLARE_API_TOKEN=cf_pat_...' > .env
+  ./deploy.sh
 EOF
 }
 
@@ -101,6 +108,21 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+# ---------- Load .env (shell env wins over file values) ----------
+for _env_f in "${SCRIPT_DIR}/.env" "./.env"; do
+    if [[ -r "${_env_f}" ]]; then
+        _saved_token="${CLOUDFLARE_API_TOKEN:-}"
+        set -a
+        # shellcheck disable=SC1090
+        source "${_env_f}"
+        set +a
+        [[ -n "${_saved_token}" ]] && CLOUDFLARE_API_TOKEN="${_saved_token}"
+        log "Loaded env from: ${_env_f}"
+        break
+    fi
+done
+unset _env_f _saved_token
 
 # ---------- Precondition: API token ----------
 if [[ -z "${CLOUDFLARE_API_TOKEN:-}" ]] && [[ "${DRY_RUN}" -eq 0 ]]; then
