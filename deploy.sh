@@ -27,6 +27,8 @@ CF_PROJECT_NAME="${CF_PROJECT_NAME:-dash-fairness-reports}"
 CF_BRANCH="${CF_BRANCH:-main}"
 
 # Cloudflare Pages Free-plan limits (see https://developers.cloudflare.com/pages/platform/limits/).
+# Note: first-run against a non-existent project requires a pre-create step (see below) —
+# wrangler's interactive project-creation prompt fails in non-TTY/CI contexts.
 MAX_FILES_WARN=20000
 MAX_FILE_BYTES=$((25 * 1024 * 1024))  # 25 MiB
 
@@ -237,6 +239,7 @@ done
 
 if (( DRY_RUN == 1 )); then
     log "${C_BOLD}DRY RUN${C_RESET} — would execute:"
+    log "  (would ensure project exists via: wrangler pages project create ${CF_PROJECT_NAME} --production-branch=${CF_BRANCH})"
     log "  ${cmd_display}"
     exit 0
 fi
@@ -244,6 +247,28 @@ fi
 # ---------- Execute ----------
 TMP_ROOT="$(mktemp -d -t cf-pages-deploy-XXXXXX)"
 out_file="${TMP_ROOT}/wrangler.out"
+
+# Ensure the project exists (idempotent — swallow "already exists").
+# Non-interactive first-run deploy fails without this step.
+log "Ensuring project '${CF_PROJECT_NAME}' exists..."
+create_out_file="${TMP_ROOT}/wrangler-create.out"
+set +e
+"${WRANGLER_CMD[@]}" pages project create "${CF_PROJECT_NAME}" \
+    --production-branch="${CF_BRANCH}" >"${create_out_file}" 2>&1
+create_rc=$?
+set -e
+if (( create_rc != 0 )); then
+    # Distinguish "already exists" (expected) from real failures (errors).
+    if grep -qiE 'already exists|project with the name' "${create_out_file}"; then
+        log "Project '${CF_PROJECT_NAME}' already exists — proceeding to deploy."
+    else
+        err "Failed to ensure project exists (exit ${create_rc}):"
+        cat "${create_out_file}" >&2
+        exit "${create_rc}"
+    fi
+else
+    log "Created Cloudflare Pages project '${CF_PROJECT_NAME}'."
+fi
 
 # Run wrangler, tee output to tmp file AND stdout.
 # Use PIPESTATUS to capture wrangler's exit code (tee will succeed regardless).
