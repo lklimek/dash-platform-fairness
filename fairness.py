@@ -1074,6 +1074,20 @@ def score_validator_from_cache(
     def t_of_block(h: int) -> datetime:
         return cache.blocks[h].time
 
+    try:
+        reg_h_int = int(reg_h) if reg_h is not None else 0
+    except (TypeError, ValueError):
+        reg_h_int = 0
+
+    # Deregistration height in core heights, or None if the MN is still
+    # registered at tip. Batch mode annotates this via protx_info["_dereg_core_h"]
+    # when a MN was present at core_lo but not at tip.
+    dereg_h_raw = info.get("_dereg_core_h") if isinstance(info, dict) else None
+    try:
+        dereg_h_int: int | None = int(dereg_h_raw) if dereg_h_raw is not None else None
+    except (TypeError, ValueError):
+        dereg_h_int = None
+
     # Fast path: if the MN has never been PoSe-banned (both fields unset) then
     # there are no transitions to find. Saves O(log(range)) Core RPCs per
     # clean validator, which compounds across batch runs.
@@ -1092,12 +1106,15 @@ def score_validator_from_cache(
     else:
         # Clamp the walk range to the MN's registered lifetime. A protx info
         # lookup at a height before registeredHeight returns "not found".
-        try:
-            reg_h_int = int(reg_h) if reg_h is not None else 0
-        except (TypeError, ValueError):
-            reg_h_int = 0
         walk_lo = max(cache.core_lo, reg_h_int) if reg_h_int > 0 else cache.core_lo
-        if walk_lo > cache.core_hi:
+        # If the MN was deregistered mid-window, don't walk past the dereg
+        # height — the MN no longer exists there so Core returns "not found".
+        walk_hi = (
+            min(cache.core_hi, dereg_h_int - 1)
+            if dereg_h_int is not None
+            else cache.core_hi
+        )
+        if walk_lo > walk_hi:
             pose_events = []
             eligible_fraction = 1.0
         else:
@@ -1105,7 +1122,7 @@ def score_validator_from_cache(
                 cache.core,
                 target_lower,
                 walk_lo,
-                cache.core_hi,
+                walk_hi,
                 cache.td,
                 cache.h_start,
                 cache.h_tip,
@@ -1113,6 +1130,19 @@ def score_validator_from_cache(
                 blocks=cache.blocks,
                 block_hash_cache=cache.block_hash_cache,
             )
+
+    # Symmetric eligibility cap: reduce eligible_fraction for late registration
+    # AND early deregistration. Without this, newly-registered or soon-to-be-
+    # deregistered MNs are compared against the full-window peer median and
+    # their selection score falsely tanks.
+    window_len = max(cache.core_hi - cache.core_lo, 1)
+    reg_start_h = max(reg_h_int, cache.core_lo) if reg_h_int > 0 else cache.core_lo
+    reg_end_h = (
+        min(dereg_h_int, cache.core_hi) if dereg_h_int is not None else cache.core_hi
+    )
+    reg_eligible = max(0.0, (reg_end_h - reg_start_h) / window_len)
+    eligible_fraction = min(eligible_fraction, reg_eligible)
+
     eligible_seconds = int(
         eligible_fraction * (cache.t_tip - cache.t_start).total_seconds()
     )
@@ -1219,6 +1249,7 @@ def score_validator_from_cache(
         },
         "eligibility": {
             "registered_height": reg_h,
+            "deregistered_core_height": dereg_h_int,
             "node_type": node_type,
             "pose_events": [
                 {
@@ -1369,14 +1400,23 @@ def compute_peer_stats_from_batch_results(
 # ---------------------------------------------------------------------------
 
 
-def classify_pose_status(report: dict[str, Any]) -> str:
+def classify_pose_status(report: dict[str, Any], core_lo: int | None = None) -> str:
     """
-    Classify PoSe status from per-validator pose_events + current protx info.
+    Classify PoSe / eligibility status from per-validator pose_events + protx info.
 
+    Precedence (first match wins):
+
+    - deregistered_in_window  MN no longer in the registry at tip but was at core_lo
     - currently_banned        PoSeBanHeight > PoSeRevivedHeight at tip
     - revived_in_window       at least one revive event falls inside the window
+    - registered_in_window    registeredHeight > core_lo (new MN during the window)
     - revived_before_window   historical revival, but nothing in window
     - never                   no PoSeRevivedHeight and no bans in window
+
+    The `registered_in_window` and `deregistered_in_window` buckets are
+    diagnostic *eligibility* categories, separate from performance issues.
+    Dereg takes precedence over ban/registered because a MN that is no longer
+    in the registry is the most specific statement we can make about it.
     """
     el = report.get("eligibility", {})
     pose_events = el.get("pose_events", []) or []
@@ -1392,10 +1432,23 @@ def classify_pose_status(report: dict[str, Any]) -> str:
     except (TypeError, ValueError):
         rev_h = -1
 
+    # Dereg beats every other state: the MN no longer exists at tip.
+    if el.get("deregistered_core_height") is not None:
+        return "deregistered_in_window"
+
     if ban_h > 0 and ban_h > rev_h:
         return "currently_banned"
     if any(ev.get("revived_at_core_height") for ev in pose_events):
         return "revived_in_window"
+
+    reg_h = el.get("registered_height")
+    try:
+        reg_h_int = int(reg_h) if reg_h is not None else 0
+    except (TypeError, ValueError):
+        reg_h_int = 0
+    if core_lo is not None and reg_h_int > core_lo:
+        return "registered_in_window"
+
     if rev_h > 0:
         return "revived_before_window"
     return "never"
@@ -2408,6 +2461,52 @@ def _existing_reports_for(
     return j, (h if h.exists() else None)
 
 
+def _bisect_deregistration_height(
+    core: CoreClient,
+    protx: str,
+    lo: int,
+    hi: int,
+    block_hash_cache: dict[int, str],
+) -> int | None:
+    """
+    Find the earliest core height in (lo, hi] where `protx info` returns
+    "not found" (i.e. the MN ceased to exist). Returns None if no such
+    height is found within the range (shouldn't happen if caller already
+    established lo=exists, hi=not-found).
+
+    Uses `block_hash_cache` (shared with the PoSe bisection) so the extra
+    RPC cost stays bounded — ~log2(range) protx_info calls per dereg'd MN.
+    """
+
+    def bh(h: int) -> str:
+        v = block_hash_cache.get(h)
+        if v is None:
+            v = core.get_block_hash(h)
+            block_hash_cache[h] = v
+        return v
+
+    def exists_at(h: int) -> bool:
+        try:
+            core.protx_info(protx, bh(h))
+            return True
+        except RuntimeError as e:
+            if "not found" in str(e).lower():
+                return False
+            raise
+
+    # Invariant: exists_at(lo)==True, exists_at(hi)==False. Binary search for
+    # smallest h in (lo, hi] with exists_at(h)==False.
+    answer = hi
+    while lo + 1 < hi:
+        mid = (lo + hi) // 2
+        if exists_at(mid):
+            lo = mid
+        else:
+            answer = mid
+            hi = mid
+    return answer
+
+
 def run_batch(args: argparse.Namespace, out_dir: Path) -> int:
     td = TenderdashClient(args.tenderdash_url)
     core = detect_core_cmd(args.core_cmd)
@@ -2415,24 +2514,65 @@ def run_batch(args: argparse.Namespace, out_dir: Path) -> int:
 
     t_batch_start = time.monotonic()
 
-    # Enumerate Evo MNs
-    evo_list_raw = core.protx_list_evo(detailed=True)
-    if not isinstance(evo_list_raw, list):
-        raise SystemExit(f"Unexpected protx list evo output type: {type(evo_list_raw)}")
-    # Sanity: filter to type=='Evo' (protx list evo already does this, but be defensive)
-    evo_nodes = [
-        x for x in evo_list_raw if isinstance(x, dict) and x.get("type") == "Evo"
-    ]
+    # Build the shared cache first — we need core_lo to enumerate the "who was
+    # a member of the Evo pool at any point in the window" union.
+    cache = build_window_cache(td, core, args.days)
+
+    # Enumerate Evo MNs at BOTH window boundaries. A MN present at tip but not
+    # at core_lo was registered mid-window; one present at core_lo but not at
+    # tip was deregistered mid-window. Either way the union gives full
+    # coverage of validators who mattered during the window.
+    evo_tip_raw = core.protx_list_evo(detailed=True)
+    if not isinstance(evo_tip_raw, list):
+        raise SystemExit(
+            f"Unexpected protx list evo (tip) output type: {type(evo_tip_raw)}"
+        )
+    evo_tip = {
+        x["proTxHash"].lower(): x
+        for x in evo_tip_raw
+        if isinstance(x, dict) and x.get("type") == "Evo"
+    }
+
+    evo_lo_raw = core.run_json("protx", "list", "evo", "true", str(cache.core_lo))
+    if not isinstance(evo_lo_raw, list):
+        raise SystemExit(
+            f"Unexpected protx list evo (lo) output type: {type(evo_lo_raw)}"
+        )
+    evo_lo = {
+        x["proTxHash"].lower(): x
+        for x in evo_lo_raw
+        if isinstance(x, dict) and x.get("type") == "Evo"
+    }
+
+    # Dereg candidates — in lo but not tip. Bisect each to pin the precise
+    # deregistration height so scoring can cap eligible_fraction at the
+    # correct boundary.
+    dereg_only = [p for p in evo_lo if p not in evo_tip]
+    if dereg_only:
+        print(
+            f"[batch] {len(dereg_only)} Evo MN(s) present at core_lo "
+            f"({cache.core_lo}) but deregistered by tip — bisecting dereg heights",
+            file=sys.stderr,
+            flush=True,
+        )
+    for protx in dereg_only:
+        dereg_h = _bisect_deregistration_height(
+            core, protx, cache.core_lo, cache.core_hi, cache.block_hash_cache
+        )
+        entry = dict(evo_lo[protx])  # snapshot of state at core_lo
+        entry["_dereg_core_h"] = dereg_h
+        evo_tip[protx] = entry
+
+    evo_nodes = list(evo_tip.values())
+
     print(
-        f"[batch] enumerated {len(evo_list_raw)} protx entries "
-        f"-> {len(evo_nodes)} Evo masternodes",
+        f"[batch] enumerated tip={len(evo_tip_raw)} + core_lo-only={len(dereg_only)} "
+        f"-> {len(evo_nodes)} Evo masternodes (union)",
         file=sys.stderr,
         flush=True,
     )
 
-    # Build the shared cache once
-    cache = build_window_cache(td, core, args.days)
-    cache.evo_registry = {x["proTxHash"].lower(): x for x in evo_nodes}
+    cache.evo_registry = evo_tip
     t_cache_built = time.monotonic()
     print(
         f"[batch] window cache built in {t_cache_built - t_batch_start:.1f}s "
@@ -2472,6 +2612,13 @@ def run_batch(args: argparse.Namespace, out_dir: Path) -> int:
                             "PoSeBanHeight": state.get("PoSeBanHeight"),
                             "PoSeRevivedHeight": state.get("PoSeRevivedHeight"),
                         }
+                        # Propagate the deregistration height (may be absent
+                        # in reports generated before this field existed).
+                        dereg_h = tip_info.get("_dereg_core_h")
+                        if dereg_h is not None:
+                            existing.setdefault("eligibility", {})[
+                                "deregistered_core_height"
+                            ] = dereg_h
                         existing["_report_filenames"] = {
                             "json": jpath.name,
                             "html": hpath.name if hpath else None,
@@ -2614,7 +2761,7 @@ def run_batch(args: argparse.Namespace, out_dir: Path) -> int:
         summary_rows.append(
             {
                 "protx": protx_upper,
-                "pose_status": classify_pose_status(rep),
+                "pose_status": classify_pose_status(rep, core_lo=cache.core_lo),
                 "member_of": qs["member_of"],
                 "met": qs["met"],
                 "skipped": qs["skipped"],
