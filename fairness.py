@@ -1959,7 +1959,9 @@ INDEX_HTML_JS = r"""
   try {
     const resp = await fetch('summary.json', {cache: 'no-store'});
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
-    rows = await resp.json();
+    const data = await resp.json();
+    // Support both new object format {window, validators} and legacy plain array.
+    rows = Array.isArray(data) ? data : (data.validators || []);
   } catch (e) {
     document.getElementById('header-meta').textContent =
         'Failed to load summary.json: ' + e.message;
@@ -2268,6 +2270,23 @@ INDEX_HTML_JS = r"""
   if (initTh) initTh.insertAdjacentHTML('beforeend', '<span class="sort-glyph">▼</span>');
 })();
 """
+
+
+def _format_window_desc(w: dict) -> str:
+    """Build a compact human-readable window description from a window dict."""
+
+    def _compact(iso: str) -> str:
+        # "2026-03-22T13:18:21Z" -> "2026-03-22 13:18 UTC"
+        return iso.replace("T", " ").rstrip("Z")[:16] + " UTC"
+
+    lo, hi = w.get("platform_range", [None, None])
+    parts = [
+        f"{w['days']}-day window",
+        f"{_compact(w['from_time'])} → {_compact(w['to_time'])}",
+    ]
+    if lo is not None and hi is not None:
+        parts.append(f"platform blocks {lo}–{hi}")
+    return "  ·  ".join(parts)
 
 
 def render_index_html(
@@ -2609,14 +2628,17 @@ def run_batch(args: argparse.Namespace, out_dir: Path) -> int:
 
     # Write summary.json + index.html
     summary_path = out_dir / "summary.json"
-    summary_path.write_text(json.dumps(summary_rows, indent=2), encoding="utf-8")
+    summary_window = {
+        "days": cache.days,
+        "from_time": iso_utc(cache.t_start),
+        "to_time": iso_utc(cache.t_tip),
+        "platform_range": [cache.h_start, cache.h_tip],
+    }
+    summary_doc = {"window": summary_window, "validators": summary_rows}
+    summary_path.write_text(json.dumps(summary_doc, indent=2), encoding="utf-8")
 
     if not args.json_only:
-        window_desc = (
-            f"{iso_utc(cache.t_start)} → {iso_utc(cache.t_tip)} "
-            f"({cache.days} days, platform heights "
-            f"{cache.h_start}–{cache.h_tip})"
-        )
+        window_desc = _format_window_desc(summary_window)
         index_html = render_index_html(
             generated_at=iso_utc(datetime.now(timezone.utc)),
             window_desc=window_desc,
@@ -2703,9 +2725,15 @@ def run_from_summary(summary_path: Path) -> int:
         print(f"Error: {summary_path} not found.", file=sys.stderr)
         return 1
     out_dir = summary_path.parent
+    data = json.loads(summary_path.read_text(encoding="utf-8"))
+    if isinstance(data, dict) and "window" in data:
+        window_desc = _format_window_desc(data["window"])
+    else:
+        # Legacy format: plain list — no window metadata available.
+        window_desc = f"(re-rendered from {summary_path.name})"
     index_html = render_index_html(
         generated_at=iso_utc(datetime.now(timezone.utc)),
-        window_desc=f"(re-rendered from {summary_path.name})",
+        window_desc=window_desc,
     )
     index_path = out_dir / "index.html"
     index_path.write_text(index_html, encoding="utf-8")
