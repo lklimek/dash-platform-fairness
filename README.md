@@ -125,8 +125,7 @@ Top-level `window` block:
 
 | value                      | meaning                                                                 |
 |----------------------------|-------------------------------------------------------------------------|
-| `never`                    | No `PoSeRevivedHeight` and no bans detected in window                   |
-| `revived_before_window`    | Historical revivals but none inside the window                          |
+| `active_whole_window`      | Fully eligible throughout the window (no bans or revives inside it)     |
 | `revived_in_window`        | ≥1 revive event falls inside the window                                 |
 | `currently_banned`         | `PoSeBanHeight > PoSeRevivedHeight` at the latest tip                   |
 | `registered_in_window`     | `registeredHeight` falls inside the window (new MN during this window)  |
@@ -134,7 +133,7 @@ Top-level `window` block:
 
 Classification precedence (first match wins):
 `deregistered_in_window` → `currently_banned` → `revived_in_window` →
-`registered_in_window` → `revived_before_window` → `never`.
+`registered_in_window` → `active_whole_window`.
 
 The last two categories (`registered_in_window`, `deregistered_in_window`)
 are **eligibility-limited** buckets: those validators were live for only
@@ -142,6 +141,11 @@ part of the window. Their `selection` axis is normalised via
 `eligible_fraction`, but their raw `member_of` / `met` counts aren't
 directly comparable to the performance buckets. The index scatter chart
 places them in a separate visual section for exactly this reason.
+
+**Backward compatibility**: older `summary.json` files may contain the
+legacy values `never` and `revived_before_window`. These are automatically
+remapped to `active_whole_window` at render time (`--from-summary`) — no
+batch re-run is needed. New batch runs natively emit the 5-value scheme.
 
 Per-validator JSON adds `eligibility.deregistered_core_height` (null for
 MNs still registered at tip; the core height at which the MN was removed

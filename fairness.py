@@ -32,7 +32,7 @@ import urllib.request
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from statistics import median
+from statistics import mean, median, stdev
 from typing import Any, Callable
 
 ALGO_VERSION = "0.2.0"
@@ -1410,13 +1410,18 @@ def classify_pose_status(report: dict[str, Any], core_lo: int | None = None) -> 
     - currently_banned        PoSeBanHeight > PoSeRevivedHeight at tip
     - revived_in_window       at least one revive event falls inside the window
     - registered_in_window    registeredHeight > core_lo (new MN during the window)
-    - revived_before_window   historical revival, but nothing in window
-    - never                   no PoSeRevivedHeight and no bans in window
+    - active_whole_window     fully eligible the entire window (no PoSe events, or
+                              only historical events before the window started)
 
     The `registered_in_window` and `deregistered_in_window` buckets are
     diagnostic *eligibility* categories, separate from performance issues.
     Dereg takes precedence over ban/registered because a MN that is no longer
     in the registry is the most specific statement we can make about it.
+
+    Previously emitted `never` and `revived_before_window` are now unified
+    into `active_whole_window` — both represent validators that were fully
+    eligible for the entire window and follow the same theoretical selection
+    distribution under random sortition.
     """
     el = report.get("eligibility", {})
     pose_events = el.get("pose_events", []) or []
@@ -1449,9 +1454,9 @@ def classify_pose_status(report: dict[str, Any], core_lo: int | None = None) -> 
     if core_lo is not None and reg_h_int > core_lo:
         return "registered_in_window"
 
-    if rev_h > 0:
-        return "revived_before_window"
-    return "never"
+    # Both "never had any PoSe event" and "revived before window" are fully
+    # eligible throughout the window — consolidate into a single category.
+    return "active_whole_window"
 
 
 # ---------------------------------------------------------------------------
@@ -1807,6 +1812,17 @@ INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
   <div class="grid-4" id="band-stats"></div>
 </section>
 
+<section class="card" id="dist-card">
+  <h2>Quorum-selection distribution &mdash; validators active the whole window</h2>
+  <p class="legend-note" id="dist-subtitle">Loading&hellip;</p>
+  <div id="dist-wrap" style="position:relative;overflow-x:auto;">
+    <svg id="dist-hist" role="img" aria-label="Histogram of member_of counts with theoretical expected distribution curve"></svg>
+    <svg id="dist-strip" role="img" aria-label="Strip plot of individual validator member_of values"></svg>
+    <div id="dist-tooltip" class="tooltip" style="display:none;"></div>
+  </div>
+  <p class="legend-note" id="dist-footnote" style="margin-top:6px;"></p>
+</section>
+
 <section class="card">
   <h2>Proposed blocks vs PoSe status</h2>
   <div id="chart-wrap" style="position:relative;overflow-x:auto;">
@@ -1820,8 +1836,8 @@ INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
     <span class="legend-item"><span class="sw sw-Poor"></span>Poor</span>
   </div>
   <p class="legend-note">
-    X axis groups validators by PoSe / eligibility state. The first four
-    buckets (<em>Never</em>, <em>Revived before window</em>,
+    X axis groups validators by PoSe / eligibility state. The first three
+    buckets (<em>Active whole window</em>,
     <em>Revived in window</em>, <em>Currently banned</em>) reflect
     <strong>performance-oriented</strong> classes — their scores are
     comparable. The two buckets after the divider
@@ -1981,6 +1997,37 @@ th[data-col]:hover { background: rgba(100,150,250,0.07); }
 @media (prefers-color-scheme: dark) { .report-sep { color: #2a2e36; } }
 .delta-pos { color: var(--delta-pos); }
 .delta-neg { color: var(--delta-neg); }
+/* Distribution chart */
+#dist-hist, #dist-strip { display: block; width: 100%; }
+.dist-bar { fill: #7eb8f7; fill-opacity: 0.65; }
+@media (prefers-color-scheme: dark) { .dist-bar { fill: #3a6db5; fill-opacity: 0.7; } }
+.dist-bar.highlight { fill-opacity: 1; }
+.dist-curve { fill: none; stroke: #e0a000; stroke-width: 2; stroke-dasharray: 6,3; }
+@media (prefers-color-scheme: dark) { .dist-curve { stroke: #efc66b; } }
+.dist-mean-line { stroke: #cc3b33; stroke-width: 1.5; stroke-dasharray: 4,3; }
+@media (prefers-color-scheme: dark) { .dist-mean-line { stroke: #ff8d8d; } }
+.dist-sigma-band { fill: #2f6fe4; fill-opacity: 0.06; }
+@media (prefers-color-scheme: dark) { .dist-sigma-band { fill: #2f6fe4; fill-opacity: 0.1; } }
+.dist-dot { cursor: pointer; stroke-width: 0.8; }
+.dist-dot:hover { stroke-width: 2.5; }
+@media (prefers-color-scheme: dark) { .dist-dot:hover { stroke: #fff; } }
+text.dist-axis, .dist-axis text { fill: #667085; font-size: 11px;
+  font-family: -apple-system, sans-serif; }
+@media (prefers-color-scheme: dark) { text.dist-axis, .dist-axis text { fill: #aeb4c0; } }
+.dist-axis line, .dist-axis path { stroke: #c8ccd1; stroke-width: 1; fill: none; }
+@media (prefers-color-scheme: dark) { .dist-axis line, .dist-axis path { stroke: #2a2e36; } }
+.dist-gridline { stroke: #e4e7ec; stroke-width: 1; stroke-dasharray: 2,3; }
+@media (prefers-color-scheme: dark) { .dist-gridline { stroke: #2a2e36; } }
+.dist-legend { margin-top: 6px; font-size: 12px; color: #667085;
+  display: flex; gap: 16px; flex-wrap: wrap; }
+.dist-legend-item { display: inline-flex; align-items: center; gap: 5px; }
+.dist-swatch { display: inline-block; width: 16px; height: 3px; }
+.dist-swatch-bar { background: #7eb8f7; height: 10px; border-radius: 2px; }
+@media (prefers-color-scheme: dark) { .dist-swatch-bar { background: #3a6db5; } }
+.dist-swatch-curve { background: #e0a000; height: 3px; border-top: 2px dashed #e0a000; }
+@media (prefers-color-scheme: dark) { .dist-swatch-curve { border-top-color: #efc66b; } }
+.dist-swatch-mean { background: #cc3b33; height: 3px; border-top: 2px dashed #cc3b33; }
+@media (prefers-color-scheme: dark) { .dist-swatch-mean { border-top-color: #ff8d8d; } }
 """
 
 
@@ -1994,13 +2041,245 @@ INDEX_HTML_JS = r"""
     Poor:      '#cc3b33',
     'N/A':     '#8892a6',
   };
-  // Category layout: first 4 are "performance" buckets (diagnostic of
+
+  // ---- Selection distribution chart (Panel 1: histogram + curve, Panel 2: strip) ----
+  (function renderDist() {
+    const D = META.dist;
+    if (!D || !D.dots || D.dots.length < 2) return;
+
+    const SVG_NS = 'http://www.w3.org/2000/svg';
+    function mkSvg(tag, attrs, parent) {
+      const el = document.createElementNS(SVG_NS, tag);
+      for (const k in attrs) el.setAttribute(k, attrs[k]);
+      if (parent) parent.appendChild(el);
+      return el;
+    }
+
+    const mu = D.mu;
+    const sigma = D.sigma;
+    const normScale = D.norm_scale;  // n / (sigma * sqrt(2π))
+    const n = D.n;
+
+    // Subtitle
+    document.getElementById('dist-subtitle').textContent =
+        'Theoretical curve shows expected distribution under random sortition ' +
+        '(validators active the whole window). ' +
+        'μ = ' + mu.toFixed(2) + ', σ = ' + sigma.toFixed(2) +
+        ', n = ' + n + '.';
+
+    // --- Bin the data (bin width 2) ---
+    const BIN_W = 2;
+    const xMin = Math.floor(Math.min(...D.dots.map((d) => d.member_of)) / BIN_W) * BIN_W;
+    const xMax = Math.ceil(Math.max(...D.dots.map((d) => d.member_of)) / BIN_W) * BIN_W;
+    const binCount = (xMax - xMin) / BIN_W;
+    const bins = new Array(binCount).fill(null).map((_, i) => ({
+      x0: xMin + i * BIN_W,
+      x1: xMin + (i + 1) * BIN_W,
+      dots: [],
+    }));
+    for (const dot of D.dots) {
+      const bi = Math.min(Math.floor((dot.member_of - xMin) / BIN_W), binCount - 1);
+      if (bi >= 0) bins[bi].dots.push(dot);
+    }
+    const maxCount = Math.max(...bins.map((b) => b.dots.length), 1);
+
+    // --- Panel 1: Histogram ---
+    const histSvg = document.getElementById('dist-hist');
+    const HW = histSvg.parentElement.clientWidth || 860;
+    const HH = 200;
+    histSvg.setAttribute('width', HW);
+    histSvg.setAttribute('height', HH);
+
+    const HM = {top: 20, right: 20, bottom: 36, left: 44};
+    const hPlotW = HW - HM.left - HM.right;
+    const hPlotH = HH - HM.top - HM.bottom;
+
+    // x scale: linear over [xMin, xMax]
+    const xRange = xMax - xMin;
+    const hxScale = (v) => HM.left + ((v - xMin) / xRange) * hPlotW;
+    const hyScale = (v) => HM.top + hPlotH - (v / (maxCount * 1.15)) * hPlotH;
+    const yTop = Math.ceil(maxCount * 1.15);
+
+    // Sigma bands (±1σ and ±2σ)
+    for (const [lo, hi] of [[mu - 2*sigma, mu + 2*sigma], [mu - sigma, mu + sigma]]) {
+      const bx = Math.max(hxScale(lo), HM.left);
+      const bw = Math.min(hxScale(hi), HM.left + hPlotW) - bx;
+      mkSvg('rect', {
+        class: 'dist-sigma-band',
+        x: bx, y: HM.top, width: Math.max(bw, 0), height: hPlotH,
+      }, histSvg);
+    }
+
+    // Gridlines + y-axis ticks
+    const nYTicks = 4;
+    const tickStep = Math.max(1, Math.ceil(yTop / nYTicks));
+    for (let v = 0; v <= yTop; v += tickStep) {
+      const y = hyScale(v);
+      mkSvg('line', {class: 'dist-gridline', x1: HM.left, x2: HM.left + hPlotW, y1: y, y2: y}, histSvg);
+      const t = mkSvg('text', {class: 'dist-axis', x: HM.left - 6, y: y + 4, 'text-anchor': 'end'}, histSvg);
+      t.textContent = v;
+    }
+
+    // Bars (track bin index per bar for highlight)
+    const barEls = [];
+    bins.forEach((bin, bi) => {
+      const bx = hxScale(bin.x0) + 1;
+      const bw = Math.max(hxScale(bin.x1) - hxScale(bin.x0) - 2, 1);
+      const by = hyScale(bin.dots.length);
+      const bh = HM.top + hPlotH - by;
+      const rect = mkSvg('rect', {
+        class: 'dist-bar',
+        x: bx, y: by, width: bw, height: Math.max(bh, 0),
+        'data-bi': bi,
+      }, histSvg);
+      barEls.push(rect);
+    });
+
+    // Theoretical curve (scale PDF by normScale * BIN_W)
+    const curveScale = normScale * BIN_W;
+    const pts = D.curve.map((p) => {
+      const cx = hxScale(p.x);
+      const cy = hyScale(p.y * curveScale);
+      return cx + ',' + cy;
+    }).join(' ');
+    mkSvg('polyline', {class: 'dist-curve', points: pts, 'vector-effect': 'non-scaling-stroke'}, histSvg);
+
+    // Mean line
+    const mx = hxScale(mu);
+    mkSvg('line', {class: 'dist-mean-line', x1: mx, x2: mx, y1: HM.top, y2: HM.top + hPlotH}, histSvg);
+    const mlabel = mkSvg('text', {
+      class: 'dist-axis', x: mx + 4, y: HM.top + 12, 'text-anchor': 'start',
+      style: 'font-size:10px;',
+    }, histSvg);
+    mlabel.textContent = 'μ=' + mu.toFixed(1);
+
+    // X-axis ticks
+    mkSvg('line', {class: 'dist-axis', x1: HM.left, x2: HM.left + hPlotW, y1: HM.top + hPlotH, y2: HM.top + hPlotH}, histSvg);
+    mkSvg('line', {class: 'dist-axis', x1: HM.left, x2: HM.left, y1: HM.top, y2: HM.top + hPlotH}, histSvg);
+    for (let v = Math.ceil(xMin / 5) * 5; v <= xMax; v += 5) {
+      const tx = hxScale(v);
+      mkSvg('line', {class: 'dist-axis', x1: tx, x2: tx, y1: HM.top + hPlotH, y2: HM.top + hPlotH + 4}, histSvg);
+      const t = mkSvg('text', {class: 'dist-axis', x: tx, y: HM.top + hPlotH + 16, 'text-anchor': 'middle'}, histSvg);
+      t.textContent = v;
+    }
+
+    // Y axis label
+    const yLabelH = mkSvg('text', {
+      class: 'dist-axis',
+      x: -(HM.top + hPlotH / 2), y: 12, 'text-anchor': 'middle', transform: 'rotate(-90)',
+    }, histSvg);
+    yLabelH.textContent = 'Count';
+
+    // --- Panel 2: Strip plot ---
+    const stripSvg = document.getElementById('dist-strip');
+    const SW = HW;
+    const SH = 70;
+    stripSvg.setAttribute('width', SW);
+    stripSvg.setAttribute('height', SH);
+
+    const SM = {top: 10, right: 20, bottom: 28, left: 44};
+    const sPlotW = SW - SM.left - SM.right;
+    const sPlotH = SH - SM.top - SM.bottom;
+    const sCy = SM.top + sPlotH / 2;
+    const sxScale = (v) => SM.left + ((v - xMin) / xRange) * sPlotW;
+
+    mkSvg('line', {class: 'dist-axis', x1: SM.left, x2: SM.left + sPlotW, y1: SH - SM.bottom, y2: SH - SM.bottom}, stripSvg);
+
+    // X-axis ticks (shared with hist)
+    for (let v = Math.ceil(xMin / 5) * 5; v <= xMax; v += 5) {
+      const tx = sxScale(v);
+      mkSvg('line', {class: 'dist-axis', x1: tx, x2: tx, y1: SH - SM.bottom, y2: SH - SM.bottom + 4}, stripSvg);
+      const t = mkSvg('text', {class: 'dist-axis', x: tx, y: SH - SM.bottom + 14, 'text-anchor': 'middle'}, stripSvg);
+      t.textContent = v;
+    }
+
+    // Tooltip
+    const tip = document.getElementById('dist-tooltip');
+    function showDistTip(evt, dot) {
+      tip.style.display = 'block';
+      const zSign = dot.z >= 0 ? '+' : '';
+      tip.innerHTML =
+          '<b>' + esc(dot.protx) + '</b><br>' +
+          'member_of: ' + dot.member_of + '<br>' +
+          'z = ' + zSign + dot.z.toFixed(2) + 'σ<br>' +
+          'band: ' + esc(dot.band) + '<br>' +
+          'status: ' + esc(dot.pose_status);
+      const rect = stripSvg.getBoundingClientRect();
+      tip.style.left = (evt.clientX - rect.left + 14) + 'px';
+      tip.style.top  = (evt.clientY - rect.top  + 14) + 'px';
+    }
+    function hideDistTip() { tip.style.display = 'none'; }
+
+    // Dots — deterministic vertical jitter using same hash trick as scatter
+    function jitterFor(protx) {
+      if (!protx || protx.length < 8) return 0;
+      let h = 0;
+      for (let i = 0; i < Math.min(protx.length, 16); i++) {
+        h = (h * 33 + protx.charCodeAt(i)) >>> 0;
+      }
+      return ((h & 0xffff) / 0xffff) * 2 - 1;
+    }
+
+    const dotEls = [];  // [{el, bi, dot}]
+    for (const dot of D.dots) {
+      const bi = Math.min(Math.floor((dot.member_of - xMin) / BIN_W), binCount - 1);
+      const cx = sxScale(dot.member_of);
+      const jy = jitterFor(dot.protx) * (sPlotH * 0.38);
+      const cy = sCy + jy;
+      const color = BAND_COLORS[dot.band] || '#8892a6';
+
+      const el = mkSvg('circle', {
+        class: 'dist-dot',
+        cx: cx, cy: cy, r: 4,
+        fill: color, 'fill-opacity': '0.75',
+        stroke: color,
+      }, stripSvg);
+
+      el.addEventListener('mousemove', (e) => { showDistTip(e, dot); });
+      el.addEventListener('mouseleave', hideDistTip);
+      el.addEventListener('click', () => {
+        const href = dot.report_html || explorerUrl(dot.protx);
+        window.open(href, '_blank', 'noopener');
+      });
+      dotEls.push({el, bi, dot});
+    }
+
+    // Histogram bar hover → highlight dots in that bin (optional interaction)
+    barEls.forEach((rect, bi) => {
+      rect.addEventListener('mouseenter', () => {
+        for (const d of dotEls) {
+          if (d.bi !== bi) continue;
+          d.el.setAttribute('r', '6');
+          d.el.setAttribute('fill-opacity', '1');
+        }
+      });
+      rect.addEventListener('mouseleave', () => {
+        for (const d of dotEls) {
+          if (d.bi !== bi) continue;
+          d.el.setAttribute('r', '4');
+          d.el.setAttribute('fill-opacity', '0.75');
+        }
+      });
+    });
+
+    // Legend + footnote
+    document.getElementById('dist-footnote').innerHTML =
+        '<span class="dist-legend">' +
+        '<span class="dist-legend-item"><span class="dist-swatch dist-swatch-bar">&nbsp;</span> Observed count per bin (width 2)</span>' +
+        '<span class="dist-legend-item"><span class="dist-swatch dist-swatch-curve"></span> Expected distribution (theoretical normal, μ='+mu.toFixed(2)+', σ='+sigma.toFixed(2)+')</span>' +
+        '<span class="dist-legend-item"><span class="dist-swatch dist-swatch-mean"></span> Mean (μ)</span>' +
+        '<span class="dist-legend-item">Dot colour = band; each dot = one validator</span>' +
+        '</span>';
+  })();
+
+  // Category layout: first 3 are "performance" buckets (diagnostic of
   // actual behaviour), last 2 are "eligibility" buckets (limited window
   // coverage — not a performance signal). A visual separator between them
   // stops operators from mistakenly comparing apples to oranges.
+  // Legacy 6-category summary.json (never + revived_before_window) is
+  // normalized to active_whole_window by the Python renderer before embedding.
   const POSE_CATEGORIES = [
-    {key: 'never',                     label: 'Never',                     group: 'performance'},
-    {key: 'revived_before_window',     label: 'Revived before window',     group: 'performance'},
+    {key: 'active_whole_window',       label: 'Active whole window',       group: 'performance'},
     {key: 'revived_in_window',         label: 'Revived in window',         group: 'performance'},
     {key: 'currently_banned',          label: 'Currently banned',          group: 'performance'},
     {key: 'registered_in_window',      label: 'Registered in window',      group: 'eligibility'},
@@ -2431,14 +2710,92 @@ def _format_window_desc(w: dict) -> str:
     return "  ·  ".join(parts)
 
 
+def normalize_pose_status(s: str) -> str:
+    """Map legacy 6-category pose_status values to the current 5-category scheme.
+
+    Older summary.json files may contain ``never`` or ``revived_before_window``.
+    Both represent validators that were fully eligible for the entire window and
+    are merged into ``active_whole_window`` for all user-facing rendering.
+    """
+    if s in ("never", "revived_before_window"):
+        return "active_whole_window"
+    return s
+
+
+def _build_dist_meta(validators: list[dict]) -> dict:
+    """Pre-compute selection-distribution data for the active-whole-window cohort.
+
+    Cohort = validators whose pose_status is ``active_whole_window`` (or the
+    legacy equivalents ``never`` / ``revived_before_window``).  These were
+    fully eligible for the entire analysis window, so their member_of counts
+    follow the same theoretical distribution (roughly binomial -> normal
+    approximation).  Pre-computing mu, sigma, z-scores and the theoretical
+    curve points server-side means the JS renderer doesn't need a stats lib.
+    """
+    import math
+
+    COHORT_STATUSES = {"active_whole_window", "never", "revived_before_window"}
+    cohort = [v for v in validators if v.get("pose_status") in COHORT_STATUSES]
+    if len(cohort) < 2:
+        return {"n": len(cohort), "mu": 0.0, "sigma": 1.0, "dots": [], "curve": []}
+
+    mo_values = [v["member_of"] for v in cohort]
+    mu = mean(mo_values)
+    sigma = stdev(mo_values)
+    n = len(cohort)
+
+    # Per-dot data for the strip plot.
+    dots = [
+        {
+            "protx": v["protx"],
+            "member_of": v["member_of"],
+            "band": v.get("band", "N/A"),
+            "pose_status": v.get("pose_status", ""),
+            "report_html": v.get("report_html"),
+            "z": round((v["member_of"] - mu) / sigma, 2),
+        }
+        for v in cohort
+    ]
+
+    # Theoretical normal curve evaluated on a fine grid over [mu-4σ, mu+4σ],
+    # clamped to the actual data range with a small margin.
+    x_lo = max(min(mo_values) - 1, mu - 4 * sigma)
+    x_hi = min(max(mo_values) + 1, mu + 4 * sigma)
+    n_grid = 120
+    step = (x_hi - x_lo) / n_grid
+    two_sigma_sq = 2.0 * sigma * sigma
+    # Scale so area under curve == n (to overlay on histogram count axis).
+    # For bin width BIN_W: scale = n * BIN_W / (sigma * sqrt(2π)).
+    # We embed scale_factor = n / (sigma * sqrt(2π)) and let JS multiply by bin_w.
+    norm_scale = n / (sigma * math.sqrt(2 * math.pi))
+    curve = []
+    x = x_lo
+    for _ in range(n_grid + 1):
+        pdf = math.exp(-((x - mu) ** 2) / two_sigma_sq)
+        curve.append({"x": round(x, 3), "y": round(pdf, 6)})
+        x += step
+
+    return {
+        "n": n,
+        "mu": round(mu, 4),
+        "sigma": round(sigma, 4),
+        "norm_scale": round(norm_scale, 6),
+        "dots": dots,
+        "curve": curve,
+    }
+
+
 def render_index_html(
     generated_at: str,
     window_desc: str,
+    validators: list[dict] | None = None,
 ) -> str:
+    dist_meta = _build_dist_meta(validators or [])
     boot_meta = {
         "generated_at": generated_at,
         "window_desc": window_desc,
         "algorithm_version": ALGO_VERSION,
+        "dist": dist_meta,
     }
     boot_json = json.dumps(boot_meta).replace("</", "<\\/")
     return (
@@ -2832,7 +3189,7 @@ def run_batch(args: argparse.Namespace, out_dir: Path) -> int:
             summary_rows.append(
                 {
                     "protx": protx_upper,
-                    "pose_status": "never",
+                    "pose_status": "active_whole_window",
                     "member_of": 0,
                     "met": 0,
                     "skipped": 0,
@@ -2878,6 +3235,7 @@ def run_batch(args: argparse.Namespace, out_dir: Path) -> int:
         index_html = render_index_html(
             generated_at=iso_utc(datetime.now(timezone.utc)),
             window_desc=window_desc,
+            validators=summary_rows,
         )
         (out_dir / "index.html").write_text(index_html, encoding="utf-8")
 
@@ -2964,12 +3322,20 @@ def run_from_summary(summary_path: Path) -> int:
     data = json.loads(summary_path.read_text(encoding="utf-8"))
     if isinstance(data, dict) and "window" in data:
         window_desc = _format_window_desc(data["window"])
+        validators = data.get("validators", [])
     else:
         # Legacy format: plain list — no window metadata available.
         window_desc = f"(re-rendered from {summary_path.name})"
+        validators = data if isinstance(data, list) else []
+    # Normalize legacy 6-category pose_status to current 5-category scheme.
+    validators = [
+        {**v, "pose_status": normalize_pose_status(v.get("pose_status", ""))}
+        for v in validators
+    ]
     index_html = render_index_html(
         generated_at=iso_utc(datetime.now(timezone.utc)),
         window_desc=window_desc,
+        validators=validators,
     )
     index_path = out_dir / "index.html"
     index_path.write_text(index_html, encoding="utf-8")
