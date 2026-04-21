@@ -1810,7 +1810,7 @@ INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
 <section class="card">
   <h2>Proposed blocks vs PoSe status</h2>
   <div id="chart-wrap" style="position:relative;overflow-x:auto;">
-    <svg id="chart" width="980" height="480" role="img" aria-label="Scatter chart of proposed blocks vs PoSe status"></svg>
+    <svg id="chart" width="980" height="500" role="img" aria-label="Scatter chart of proposed blocks vs PoSe status"></svg>
     <div id="tooltip" class="tooltip" style="display:none;"></div>
   </div>
   <div class="legend">
@@ -1819,6 +1819,18 @@ INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
     <span class="legend-item"><span class="sw sw-Concerning"></span>Concerning</span>
     <span class="legend-item"><span class="sw sw-Poor"></span>Poor</span>
   </div>
+  <p class="legend-note">
+    X axis groups validators by PoSe / eligibility state. The first four
+    buckets (<em>Never</em>, <em>Revived before window</em>,
+    <em>Revived in window</em>, <em>Currently banned</em>) reflect
+    <strong>performance-oriented</strong> classes — their scores are
+    comparable. The two buckets after the divider
+    (<em>Registered in window</em>, <em>Deregistered in window</em>) are
+    <strong>eligibility-limited</strong>: those validators were live for only
+    part of the window and are normalised via <code>eligible_fraction</code>,
+    so their bands should not be compared directly with the performance
+    group. Dot colour = overall band.
+  </p>
 </section>
 
 <div class="footnote-block">
@@ -1926,6 +1938,9 @@ a:hover { text-decoration: underline; }
 .legend { margin-top: 10px; font-size: 13px; color: #667085; display: flex; gap: 16px;
           flex-wrap: wrap; }
 .legend-item { display: inline-flex; align-items: center; gap: 6px; }
+.legend-note { margin: 8px 0 0 0; font-size: 12px; color: #667085; line-height: 1.5; max-width: 900px; }
+.legend-note em { font-style: normal; color: #404756; }
+@media (prefers-color-scheme: dark) { .legend-note em { color: #cdd3dc; } }
 .sw { display: inline-block; width: 12px; height: 12px; border-radius: 50%; }
 .sw-Excellent   { background: #2b9348; }
 .sw-Good        { background: #2f6fe4; }
@@ -1938,6 +1953,12 @@ text.axis, .axis text { fill: #667085; font-size: 11px; font-family: -apple-syst
 @media (prefers-color-scheme: dark) { .dot { stroke: #0f1115; } }
 .dot:hover { stroke-width: 2; stroke: #000; }
 @media (prefers-color-scheme: dark) { .dot:hover { stroke: #fff; } }
+.group-sep { stroke: #8892a6; stroke-width: 1.2; stroke-dasharray: 4, 3; opacity: 0.75; }
+@media (prefers-color-scheme: dark) { .group-sep { stroke: #5d6776; } }
+text.group-caption { font-size: 11px; font-weight: 600; letter-spacing: .2px; fill: #404756; }
+@media (prefers-color-scheme: dark) { text.group-caption { fill: #aeb4c0; } }
+.eligibility-mark { cursor: help; color: #8892a6; font-size: 11px; margin-left: 2px; }
+@media (prefers-color-scheme: dark) { .eligibility-mark { color: #6a7380; } }
 .footnote-block { border-top: 1px solid #e4e7ec; margin: 4px 0 0 0; padding: 10px 0 4px 0;
                   font-size: 12px; color: #667085; }
 @media (prefers-color-scheme: dark) { .footnote-block { border-color: #2a2e36; color: #8892a6; } }
@@ -1973,12 +1994,19 @@ INDEX_HTML_JS = r"""
     Poor:      '#cc3b33',
     'N/A':     '#8892a6',
   };
+  // Category layout: first 4 are "performance" buckets (diagnostic of
+  // actual behaviour), last 2 are "eligibility" buckets (limited window
+  // coverage — not a performance signal). A visual separator between them
+  // stops operators from mistakenly comparing apples to oranges.
   const POSE_CATEGORIES = [
-    {key: 'never',                  label: 'Never'},
-    {key: 'revived_before_window',  label: 'Revived before window'},
-    {key: 'revived_in_window',      label: 'Revived in window'},
-    {key: 'currently_banned',       label: 'Currently banned'},
+    {key: 'never',                     label: 'Never',                     group: 'performance'},
+    {key: 'revived_before_window',     label: 'Revived before window',     group: 'performance'},
+    {key: 'revived_in_window',         label: 'Revived in window',         group: 'performance'},
+    {key: 'currently_banned',          label: 'Currently banned',          group: 'performance'},
+    {key: 'registered_in_window',      label: 'Registered in window',      group: 'eligibility'},
+    {key: 'deregistered_in_window',    label: 'Deregistered in window',    group: 'eligibility'},
   ];
+  const LIMITED_ELIGIBILITY = new Set(['registered_in_window', 'deregistered_in_window']);
   const SVG_NS = 'http://www.w3.org/2000/svg';
 
   function abbrev(h) {
@@ -2058,13 +2086,26 @@ INDEX_HTML_JS = r"""
   const svg = document.getElementById('chart');
   const W = svg.clientWidth || 980;
   const H = svg.clientHeight || 480;
-  const M = {top: 24, right: 80, bottom: 70, left: 56};
+  const M = {top: 38, right: 80, bottom: 82, left: 56};
   const plotW = W - M.left - M.right;
   const plotH = H - M.top - M.bottom;
 
-  // X: categorical 4 slots
+  // X layout: N slots + a gap between the "performance" and "eligibility"
+  // groups. Each slot gets one unit; the gap gets GAP_UNITS (0.6 feels like
+  // a clear break without wasting space).
   const catCount = POSE_CATEGORIES.length;
-  const xCenter = (i) => M.left + (plotW / catCount) * (i + 0.5);
+  const GAP_UNITS = 0.6;
+  const groupChangeIdx = POSE_CATEGORIES.findIndex((c) => c.group === 'eligibility');
+  const hasSeparator = groupChangeIdx > 0 && groupChangeIdx < catCount;
+  const totalUnits = catCount + (hasSeparator ? GAP_UNITS : 0);
+  const unitW = plotW / totalUnits;
+  // Offset in units for category i (0..catCount-1). The gap sits at
+  // groupChangeIdx, so anything at or past it shifts by GAP_UNITS.
+  function slotOffset(i) {
+    return i + (hasSeparator && i >= groupChangeIdx ? GAP_UNITS : 0);
+  }
+  const xCenter = (i) => M.left + unitW * (slotOffset(i) + 0.5);
+  const slotLeft = (i) => M.left + unitW * slotOffset(i);
 
   // Y scale: auto-range from met counts. Pad top.
   let yMax = 0;
@@ -2109,22 +2150,62 @@ INDEX_HTML_JS = r"""
     y1: M.top, y2: M.top + plotH,
   });
 
-  // X-axis category labels
+  // X-axis category labels + between-slot gridlines. Skip the gridline at
+  // the group boundary — the explicit separator below replaces it and a
+  // faint gridline next to a bold separator reads as noise.
+  // Long labels are wrapped onto two lines so they don't overlap when the
+  // chart is narrow. Heuristic: split on the first space if the label is
+  // longer than 10 chars.
+  function splitLabel(s) {
+    if (s.length <= 10 || !s.includes(' ')) return [s];
+    const i = s.indexOf(' ');
+    return [s.slice(0, i), s.slice(i + 1)];
+  }
   for (let i = 0; i < catCount; i++) {
     const cx = xCenter(i);
+    const parts = splitLabel(POSE_CATEGORIES[i].label);
     const t = addSvg('text', {
-      class: 'axis', x: cx, y: M.top + plotH + 22, 'text-anchor': 'middle',
+      class: 'axis', x: cx, y: M.top + plotH + 18, 'text-anchor': 'middle',
     });
-    t.textContent = POSE_CATEGORIES[i].label;
-    if (i > 0) {
+    parts.forEach((part, j) => {
+      const ts = document.createElementNS(SVG_NS, 'tspan');
+      ts.setAttribute('x', cx);
+      ts.setAttribute('dy', j === 0 ? '0' : '1.2em');
+      ts.textContent = part;
+      t.appendChild(ts);
+    });
+    if (i > 0 && i !== groupChangeIdx) {
       addSvg('line', {
         class: 'gridline',
-        x1: M.left + (plotW / catCount) * i,
-        x2: M.left + (plotW / catCount) * i,
-        y1: M.top,
-        y2: M.top + plotH,
+        x1: slotLeft(i), x2: slotLeft(i),
+        y1: M.top, y2: M.top + plotH,
       });
     }
+  }
+
+  // Group separator + captions: visually split the chart into two
+  // semantic halves. Dashed/thicker line sits in the middle of the gap.
+  if (hasSeparator) {
+    const sepX = slotLeft(groupChangeIdx) - (unitW * GAP_UNITS) / 2;
+    addSvg('line', {
+      class: 'group-sep',
+      x1: sepX, x2: sepX,
+      y1: M.top - 14, y2: M.top + plotH + 6,
+    });
+    // Performance caption (centred over the performance half)
+    const perfMid = (xCenter(0) + xCenter(groupChangeIdx - 1)) / 2;
+    const pc = addSvg('text', {
+      class: 'axis group-caption',
+      x: perfMid, y: M.top - 22, 'text-anchor': 'middle',
+    });
+    pc.textContent = 'Performance issues';
+    // Eligibility caption (centred over the eligibility half)
+    const eligMid = (xCenter(groupChangeIdx) + xCenter(catCount - 1)) / 2;
+    const ec = addSvg('text', {
+      class: 'axis group-caption',
+      x: eligMid, y: M.top - 22, 'text-anchor': 'middle',
+    });
+    ec.textContent = 'Limited eligibility';
   }
 
   // Y-axis label
@@ -2166,13 +2247,18 @@ INDEX_HTML_JS = r"""
   const tip = document.getElementById('tooltip');
   function showTip(evt, r) {
     tip.style.display = 'block';
+    const limitedNote = LIMITED_ELIGIBILITY.has(r.pose_status)
+        ? '<br><em>(limited eligibility — partial window)</em>'
+        : '';
     tip.innerHTML =
         '<b>' + esc(r.protx) + '</b><br>' +
+        'status: ' + esc(r.pose_status) + '<br>' +
         'proposed: ' + esc(r.met) + '<br>' +
         'skipped: ' + esc(r.skipped) + '<br>' +
         'member_of: ' + esc(r.member_of) + '<br>' +
         'band: ' + esc(r.band) + ' (' +
-        (r.composite == null ? '—' : Number(r.composite).toFixed(4)) + ')';
+        (r.composite == null ? '—' : Number(r.composite).toFixed(4)) + ')' +
+        limitedNote;
     positionTip(evt);
   }
   function positionTip(evt) {
@@ -2251,11 +2337,15 @@ INDEX_HTML_JS = r"""
       const delta = Math.round(Number(r.met || 0) - medianMet);
       const deltaSign = delta > 0 ? '+' : '';
       const deltaCls = delta > 0 ? 'delta-pos' : delta < 0 ? 'delta-neg' : '';
-      const deltaCell = deltaCls
+      const limited = LIMITED_ELIGIBILITY.has(r.pose_status);
+      const mark = limited
+        ? '<abbr class="eligibility-mark" title="Limited eligibility: validator was live for only part of the window — Δ against the full-window median is not directly comparable.">*</abbr>'
+        : '';
+      const deltaInner = deltaCls
         ? `<span class="${deltaCls}">${deltaSign}${delta}</span>`
         : `${deltaSign}${delta}`;
+      const deltaCell = deltaInner + mark;
 
-      const protxLower = String(r.protx || '').toLowerCase();
       const htmlLink = r.report_html
         ? `<a href="${esc(r.report_html)}" title="${esc(r.protx)}">HTML</a>`
         : '';
@@ -2265,6 +2355,10 @@ INDEX_HTML_JS = r"""
       const explorerLink = `<a href="${explorerUrl(r.protx)}" target="_blank" rel="noopener">Explorer</a>`;
       const sep = '<span class="report-sep">·</span>';
       const reportLinks = [htmlLink, jsonLink, explorerLink].filter(Boolean).join(sep);
+
+      const deltaTitle = limited
+        ? `Δ from median (${medianMet}) — limited eligibility, see legend`
+        : `Δ from median (${medianMet})`;
 
       const tr = document.createElement('tr');
       tr.innerHTML =
@@ -2277,7 +2371,7 @@ INDEX_HTML_JS = r"""
         '<td>' + (r.composite == null ? '—' : Number(r.composite).toFixed(4)) + '</td>' +
         '<td>' + esc(r.member_of) + '</td>' +
         '<td>' + esc(r.met) + '</td>' +
-        '<td class="' + deltaCls + '" title="Δ from median (' + medianMet + ')">' + deltaCell + '</td>' +
+        '<td class="' + deltaCls + '" title="' + esc(deltaTitle) + '">' + deltaCell + '</td>' +
         '<td>' + esc(r.skipped) + '</td>' +
         '<td><code>' + esc(r.pose_status) + '</code></td>' +
         '<td class="report-links">' + reportLinks + '</td>';
