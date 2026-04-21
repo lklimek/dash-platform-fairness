@@ -66,8 +66,12 @@ validators with zero `member_of` are excluded from the `member_of` median.
 
 ## `--all-platform` pipeline
 
-1. Enumerate Evo masternodes via `protx list evo true` (type = `Evo`, no
-   Regular MNs).
+1. Enumerate Evo masternodes via `protx list evo true` at **both** the
+   window-start (`core_lo`) and tip (`core_hi`) heights and take the
+   union. This covers mid-window registrations and deregistrations that
+   would otherwise be invisible. For MNs present at `core_lo` but gone
+   at tip, bisect the deregistration height (cheap — reuses the shared
+   block-hash cache).
 2. Build a shared window cache once:
    - Tenderdash `/status` + `/block?height=H` for every H in the window.
    - Tenderdash `/validators?height=<sub_run_lo>` per unique `validators_hash`.
@@ -103,14 +107,45 @@ historical `protx info` walk entirely.
 ]
 ```
 
+Top-level `window` block:
+
+```json
+{
+  "window": {
+    "days": 30,
+    "from_time": "...",
+    "to_time": "...",
+    "platform_range": [h_start, h_tip]
+  },
+  "validators": [ ... ]
+}
+```
+
 `pose_status` values:
 
-| value                   | meaning                                                  |
-|-------------------------|----------------------------------------------------------|
-| `never`                 | No `PoSeRevivedHeight` and no bans detected in window    |
-| `revived_before_window` | Historical revivals but none inside the window           |
-| `revived_in_window`     | ≥1 revive event falls inside the window                  |
-| `currently_banned`      | `PoSeBanHeight > PoSeRevivedHeight` at the latest tip    |
+| value                      | meaning                                                                 |
+|----------------------------|-------------------------------------------------------------------------|
+| `never`                    | No `PoSeRevivedHeight` and no bans detected in window                   |
+| `revived_before_window`    | Historical revivals but none inside the window                          |
+| `revived_in_window`        | ≥1 revive event falls inside the window                                 |
+| `currently_banned`         | `PoSeBanHeight > PoSeRevivedHeight` at the latest tip                   |
+| `registered_in_window`     | `registeredHeight` falls inside the window (new MN during this window)  |
+| `deregistered_in_window`   | MN was in `protx list evo` at `core_lo` but absent at tip               |
+
+Classification precedence (first match wins):
+`deregistered_in_window` → `currently_banned` → `revived_in_window` →
+`registered_in_window` → `revived_before_window` → `never`.
+
+The last two categories (`registered_in_window`, `deregistered_in_window`)
+are **eligibility-limited** buckets: those validators were live for only
+part of the window. Their `selection` axis is normalised via
+`eligible_fraction`, but their raw `member_of` / `met` counts aren't
+directly comparable to the performance buckets. The index scatter chart
+places them in a separate visual section for exactly this reason.
+
+Per-validator JSON adds `eligibility.deregistered_core_height` (null for
+MNs still registered at tip; the core height at which the MN was removed
+from `protx list evo` otherwise).
 
 ## index.html
 
