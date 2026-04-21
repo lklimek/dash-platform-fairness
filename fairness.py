@@ -1923,6 +1923,15 @@ INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
   </div>
 </section>
 
+<footer class="site-footer" role="contentinfo">
+  <p>
+    &copy; 2026 Lukasz Klimek &middot;
+    vibe-coded with <a href="https://github.com/lklimek/claudius">Claudius the Magnificent</a>
+    and <a href="https://claude.com/claude-code">Claude Code</a> &middot;
+    <a href="https://github.com/lklimek/dash-platform-fairness/">source on GitHub</a>
+  </p>
+</footer>
+
 <script type="application/json" id="boot-meta">__BOOT_META__</script>
 <script>__JS__</script>
 </body></html>
@@ -2032,6 +2041,14 @@ th[data-col]:hover { background: rgba(100,150,250,0.07); }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
            overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
 .report-links { font-size: 11px; white-space: nowrap; }
+.site-footer { margin: 32px 0 16px 0; padding-top: 16px; border-top: 1px solid #e4e7ec;
+               font-size: 12px; color: #667085; text-align: center; }
+@media (prefers-color-scheme: dark) { .site-footer { border-color: #2a2e36; color: #8892a6; } }
+.site-footer a { color: inherit; text-decoration: underline; text-decoration-thickness: 1px;
+                 text-underline-offset: 2px; }
+.site-footer a:hover { color: #0366d6; }
+@media (prefers-color-scheme: dark) { .site-footer a:hover { color: #79b8ff; } }
+.site-footer p { margin: 0; }
 .report-links a { color: inherit; opacity: 0.75; }
 .report-links a:hover { opacity: 1; text-decoration: underline; }
 .report-sep { color: #c8ccd1; margin: 0 3px; }
