@@ -43,6 +43,20 @@ CORE_LLMQ_TYPE_NUM = 4  # llmq_100_67 on mainnet; Tenderdash reports quorum_type
 
 DEFAULT_COMPOSITE_WEIGHTS = {"selection": 0.30, "participation": 0.50, "liveness": 0.20}
 
+# pose_status values that mean "validator was fully eligible for the ENTIRE
+# window". Only these nodes contribute to the peer baseline (member_of median):
+# partial-eligibility peers (registered mid-window, deregistered mid-window,
+# revived mid-window, currently banned) get SCORED AGAINST the baseline, not
+# used to DEFINE it. Including the legacy pre-merge values keeps the filter
+# backward-compatible with older summary.json blobs.
+ALWAYS_ELIGIBLE_POSE_STATUSES = frozenset(
+    {
+        "active_whole_window",  # current merged category (v0.2.0+)
+        "never",  # legacy pre-merge
+        "revived_before_window",  # legacy pre-merge
+    }
+)
+
 DEFAULT_CORE_CMD = "docker exec dashmate_2d59c0c6_mainnet-core-1 dash-cli"
 DEFAULT_CORE_CMD_FALLBACK = "dash-cli"
 
@@ -1304,6 +1318,7 @@ def score_validator_from_cache(
 def compute_peer_stats_from_pool(
     core: CoreClient,
     core_h_tip: int,
+    core_lo: int,
     aggregated: list[AggregatedQuorum],
     skip: bool,
 ) -> PeerStats:
@@ -1312,9 +1327,20 @@ def compute_peer_stats_from_pool(
     proposal counts. This is the fallback path for single-target mode when
     --skip-peer-scan is NOT set; batch mode uses the richer
     compute_peer_stats_from_batch_results.
+
+    We don't have full pose_status classification here (single-target mode
+    runs the scan BEFORE per-peer pose events are computed), so we use a
+    cheap proxy: exclude peers whose ``registeredHeight > core_lo`` — i.e.,
+    peers that appeared mid-window. These are the "registered_in_window"
+    cohort; including them in the baseline deflates the median. We can't
+    cheaply detect mid-window revives or bans in single-target mode, so
+    the baseline here is still slightly deflated — but less than before.
+    (Batch mode has the full classification and excludes all partial-
+    eligibility statuses correctly.)
     """
     pool_raw = core.protx_list_valid(detailed=True, height=core_h_tip)
     evo_list: list[str] = []
+    evo_baseline: list[str] = []  # subset eligible for baseline (reg_h <= core_lo)
     for x in pool_raw:
         if not isinstance(x, dict):
             continue
@@ -1327,7 +1353,10 @@ def compute_peer_stats_from_pool(
             except (TypeError, ValueError):
                 reg_h_i = 0
             if reg_h_i <= core_h_tip:
-                evo_list.append(x["proTxHash"].lower())
+                protx_lower = x["proTxHash"].lower()
+                evo_list.append(protx_lower)
+                if reg_h_i <= core_lo:
+                    evo_baseline.append(protx_lower)
     pool_size = len(evo_list)
 
     if skip:
@@ -1350,10 +1379,15 @@ def compute_peer_stats_from_pool(
                 if peer in agg.expected_slot_of:
                     expected_by_peer[peer] += 1
 
-    member_of_values = [v for v in member_of_by_peer.values() if v > 0]
+    # Only peers eligible for the full window (reg_h <= core_lo) define the
+    # baseline. Fall back to the full pool if the proxy excludes everyone.
+    baseline_peers = evo_baseline or evo_list
+    member_of_values = [
+        member_of_by_peer[p] for p in baseline_peers if member_of_by_peer[p] > 0
+    ]
     member_of_median = float(median(member_of_values)) if member_of_values else 0.0
     rates = []
-    for p in evo_list:
+    for p in baseline_peers:
         if expected_by_peer[p] > 0:
             rates.append(proposed_by_peer[p] / expected_by_peer[p])
     proposed_rate_median = float(median(rates)) if rates else 1.0
@@ -1370,13 +1404,20 @@ def compute_peer_stats_from_batch_results(
 ) -> PeerStats:
     """
     Compute peer medians from the aggregated per-validator results produced
-    by a batch run. Only validators who were members of at least one quorum
-    contribute to member_of median; participation-rate median excludes nodes
-    with zero (met+skipped) denominators.
+    by a batch run.
+
+    Only validators eligible the ENTIRE window (pose_status in
+    ``ALWAYS_ELIGIBLE_POSE_STATUSES``) contribute to the baseline.
+    Partial-eligibility validators (registered mid-window, deregistered
+    mid-window, revived mid-window, currently banned) are SCORED AGAINST the
+    baseline; using them to DEFINE it would deflate the median and inflate
+    everyone's selection score.
     """
     member_ofs: list[int] = []
     rates: list[float] = []
     for r in batch_rows:
+        if r.get("pose_status") not in ALWAYS_ELIGIBLE_POSE_STATUSES:
+            continue
         mo = int(r.get("member_of", 0) or 0)
         met = int(r.get("met", 0) or 0)
         skipped = int(r.get("skipped", 0) or 0)
@@ -2875,7 +2916,11 @@ def run_single(args: argparse.Namespace, out_dir: Path) -> int:
 
     # Peer stats: use the Evo pool pass (matches v0.1.0 behaviour)
     peer_stats = compute_peer_stats_from_pool(
-        core, cache.core_h_tip, cache.aggregated_quorums, skip=args.skip_peer_scan
+        core,
+        cache.core_h_tip,
+        cache.core_lo,
+        cache.aggregated_quorums,
+        skip=args.skip_peer_scan,
     )
 
     report = score_validator_from_cache(
@@ -3109,16 +3154,29 @@ def run_batch(args: argparse.Namespace, out_dir: Path) -> int:
     )
 
     # Recompute peer stats from aggregated results, then re-score.
+    # Classify pose_status eagerly so the median filter can exclude
+    # partial-eligibility validators — see compute_peer_stats_from_batch_results.
     batch_rows_stub = [
         {
             "member_of": r["quorum_stats"]["member_of"],
             "met": r["quorum_stats"]["met"],
             "skipped": r["quorum_stats"]["skipped"],
+            "pose_status": classify_pose_status(r, core_lo=cache.core_lo),
         }
         for r in reports
         if r.get("status") != "NOT_APPLICABLE"
     ]
     batch_peer_stats = compute_peer_stats_from_batch_results(batch_rows_stub)
+    baseline_n = sum(
+        1 for r in batch_rows_stub if r["pose_status"] in ALWAYS_ELIGIBLE_POSE_STATUSES
+    )
+    print(
+        f"[batch] peer member_of_median (filtered to always-eligible, "
+        f"n={baseline_n}/{batch_peer_stats.pool_size}): "
+        f"{batch_peer_stats.member_of_median:.2f}",
+        file=sys.stderr,
+        flush=True,
+    )
     vlog(
         f"batch peer medians: pool_size={batch_peer_stats.pool_size} "
         f"member_of_median={batch_peer_stats.member_of_median:.2f} "
