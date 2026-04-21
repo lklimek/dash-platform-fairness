@@ -2218,13 +2218,8 @@ INDEX_HTML_JS = r"""
   });
   yLabel.textContent = 'Proposed blocks (MET)';
 
-  // Title
-  const title = addSvg('text', {
-    class: 'axis',
-    x: M.left + plotW / 2, y: 14, 'text-anchor': 'middle',
-    style: 'font-size:13px;font-weight:600;',
-  });
-  title.textContent = 'Validator fairness — proposed blocks by PoSe status';
+  // (No in-SVG title — the surrounding <h2> already names the chart and a
+  // second title crowds the group-separator captions.)
 
   // Median line (fix #5): drawn before dots so it renders behind them.
   const medY = yScale(medianMet);
