@@ -1768,20 +1768,31 @@ INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
   </div>
 </section>
 
+<div class="footnote-block">
+  <p>Algorithm v__ALGO__. Each dot is one validator; hover for details, click to open
+     platform-explorer.com. Per-validator JSON and HTML reports live alongside this file.</p>
+</div>
+
 <section class="card">
   <h2>All validators</h2>
+  <div class="filter-row">
+    <label for="validator-filter" class="sr-only">Filter by protx hash</label>
+    <input type="search" id="validator-filter" placeholder="Filter by protx hash…" aria-label="Filter by protx hash" autocomplete="off">
+    <span class="muted" id="filter-count" aria-live="polite"></span>
+  </div>
   <div class="table-wrap">
     <table id="tbl">
       <thead>
         <tr>
           <th>#</th>
-          <th>Pro TX</th>
-          <th>Band</th>
-          <th>Composite</th>
-          <th>Member of</th>
-          <th>MET</th>
-          <th>SKIPPED</th>
-          <th>PoSe status</th>
+          <th data-col="protx" data-type="lex">Pro TX</th>
+          <th data-col="band" data-type="lex">Band</th>
+          <th data-col="composite" data-type="num">Composite</th>
+          <th data-col="member_of" data-type="num">Member of</th>
+          <th data-col="met" data-type="num">MET</th>
+          <th data-col="delta" data-type="num">&#916; median</th>
+          <th data-col="skipped" data-type="num">SKIPPED</th>
+          <th data-col="pose_status" data-type="lex">PoSe status</th>
           <th>Report</th>
         </tr>
       </thead>
@@ -1790,11 +1801,6 @@ INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
   </div>
 </section>
 
-<footer>
-  <p>Algorithm v__ALGO__. Each dot is one validator; hover for details, click to open
-     platform-explorer.com. Per-validator JSON and HTML reports live alongside this file.</p>
-</footer>
-
 <script type="application/json" id="boot-meta">__BOOT_META__</script>
 <script>__JS__</script>
 </body></html>
@@ -1802,11 +1808,16 @@ INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
 
 
 INDEX_HTML_CSS = """
-:root { color-scheme: light dark; }
+:root {
+  color-scheme: light dark;
+  --delta-pos: #1a7f37;
+  --delta-neg: #cf222e;
+}
 * { box-sizing: border-box; }
 body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
        margin: 0; padding: 24px; background: #f6f7f9; color: #1a1a1a; max-width: 1200px; }
 @media (prefers-color-scheme: dark) {
+  :root { --delta-pos: #57ab5a; --delta-neg: #ff8d8d; }
   body { background: #0f1115; color: #e6e8ec; }
   .card { background: #191c22 !important; border-color: #2a2e36 !important; }
   th, td { border-color: #2a2e36 !important; }
@@ -1814,7 +1825,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
   a { color: #8ab4f8; }
   .tooltip { background: #0b0d11 !important; color: #e6e8ec !important;
              border-color: #2a2e36 !important; }
-  .axis text { fill: #aeb4c0; }
+  text.axis, .axis text { fill: #aeb4c0; }
   .axis line, .axis path { stroke: #2a2e36; }
   .gridline { stroke: #2a2e36; }
   #chart-bg { fill: #0b0d11; }
@@ -1867,14 +1878,35 @@ a:hover { text-decoration: underline; }
 .sw-Good        { background: #2f6fe4; }
 .sw-Concerning  { background: #e0a000; }
 .sw-Poor        { background: #cc3b33; }
-.axis text { fill: #667085; font-size: 11px; font-family: -apple-system, sans-serif; }
+text.axis, .axis text { fill: #667085; font-size: 11px; font-family: -apple-system, sans-serif; }
 .axis line, .axis path { stroke: #c8ccd1; stroke-width: 1; fill: none; }
 .gridline { stroke: #e4e7ec; stroke-width: 1; stroke-dasharray: 2, 3; }
 .dot { cursor: pointer; stroke: #fff; stroke-width: 0.5; }
 @media (prefers-color-scheme: dark) { .dot { stroke: #0f1115; } }
 .dot:hover { stroke-width: 2; stroke: #000; }
 @media (prefers-color-scheme: dark) { .dot:hover { stroke: #fff; } }
-footer { margin-top: 30px; font-size: 12px; color: #667085; }
+.footnote-block { border-top: 1px solid #e4e7ec; margin: 4px 0 0 0; padding: 10px 0 4px 0;
+                  font-size: 12px; color: #667085; }
+@media (prefers-color-scheme: dark) { .footnote-block { border-color: #2a2e36; color: #8892a6; } }
+.footnote-block p { margin: 0; }
+.filter-row { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
+#validator-filter { padding: 6px 10px; border: 1px solid #c8ccd1; border-radius: 6px;
+                    font-size: 13px; width: 320px; background: inherit; color: inherit; }
+@media (prefers-color-scheme: dark) { #validator-filter { border-color: #2a2e36; background: #0b0d11; } }
+#filter-count { font-size: 12px; }
+th[data-col] { cursor: pointer; user-select: none; }
+th[data-col]:hover { background: rgba(100,150,250,0.07); }
+@media (prefers-color-scheme: dark) { th[data-col]:hover { background: rgba(100,150,250,0.12); } }
+.sort-glyph { margin-left: 4px; font-size: 10px; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+           overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+.report-links { font-size: 11px; white-space: nowrap; }
+.report-links a { color: inherit; opacity: 0.75; }
+.report-links a:hover { opacity: 1; text-decoration: underline; }
+.report-sep { color: #c8ccd1; margin: 0 3px; }
+@media (prefers-color-scheme: dark) { .report-sep { color: #2a2e36; } }
+.delta-pos { color: var(--delta-pos); }
+.delta-neg { color: var(--delta-neg); }
 """
 
 
@@ -1920,7 +1952,6 @@ INDEX_HTML_JS = r"""
     for (let i = 0; i < Math.min(protx.length, 16); i++) {
       h = (h * 33 + protx.charCodeAt(i)) >>> 0;
     }
-    // map into [-1, 1]
     return ((h & 0xffff) / 0xffff) * 2 - 1;
   }
 
@@ -1934,6 +1965,16 @@ INDEX_HTML_JS = r"""
         'Failed to load summary.json: ' + e.message;
     return;
   }
+
+  // Compute median of met values across all rows (fix #5, #9).
+  function median(arr) {
+    if (!arr.length) return 0;
+    const s = arr.slice().sort((a, b) => a - b);
+    const m = Math.floor(s.length / 2);
+    return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+  }
+  const metValues = rows.map((r) => Number(r.met || 0));
+  const medianMet = median(metValues);
 
   // Header meta
   const total = rows.length;
@@ -1962,7 +2003,7 @@ INDEX_HTML_JS = r"""
   const svg = document.getElementById('chart');
   const W = svg.clientWidth || 980;
   const H = svg.clientHeight || 480;
-  const M = {top: 24, right: 24, bottom: 70, left: 56};
+  const M = {top: 24, right: 80, bottom: 70, left: 56};
   const plotW = W - M.left - M.right;
   const plotH = H - M.top - M.bottom;
 
@@ -2020,7 +2061,6 @@ INDEX_HTML_JS = r"""
       class: 'axis', x: cx, y: M.top + plotH + 22, 'text-anchor': 'middle',
     });
     t.textContent = POSE_CATEGORIES[i].label;
-    // subtle category separator
     if (i > 0) {
       addSvg('line', {
         class: 'gridline',
@@ -2050,6 +2090,23 @@ INDEX_HTML_JS = r"""
   });
   title.textContent = 'Validator fairness — proposed blocks by PoSe status';
 
+  // Median line (fix #5): drawn before dots so it renders behind them.
+  const medY = yScale(medianMet);
+  addSvg('line', {
+    class: 'gridline',
+    x1: M.left, x2: M.left + plotW,
+    y1: medY, y2: medY,
+    style: 'stroke-dasharray:6,4;stroke-width:1.5;opacity:0.7;',
+  });
+  const medLabel = addSvg('text', {
+    class: 'axis',
+    x: M.left + plotW + 6,
+    y: medY + 4,
+    'text-anchor': 'start',
+    style: 'font-size:10px;',
+  });
+  medLabel.textContent = 'median: ' + Math.round(medianMet);
+
   // Tooltip
   const tip = document.getElementById('tooltip');
   function showTip(evt, r) {
@@ -2075,11 +2132,11 @@ INDEX_HTML_JS = r"""
   const catIdx = {};
   POSE_CATEGORIES.forEach((c, i) => { catIdx[c.key] = i; });
 
-  // Dots
+  // Dots (drawn after median line so they appear on top)
   for (const r of rows) {
     const ci = catIdx[r.pose_status];
     if (ci == null) continue;
-    const jx = jitterFor(r.protx) * 15;  // ±15px
+    const jx = jitterFor(r.protx) * 15;
     const cx = xCenter(ci) + jx;
     const cy = yScale(Number(r.met || 0));
     const color = BAND_COLORS[r.band] || '#8892a6';
@@ -2089,9 +2146,7 @@ INDEX_HTML_JS = r"""
       fill: color,
       'fill-opacity': 0.8,
     });
-    dot.addEventListener('mousemove', (e) => {
-      showTip(e, r);
-    });
+    dot.addEventListener('mousemove', (e) => { showTip(e, r); });
     dot.addEventListener('mouseleave', hideTip);
     dot.addEventListener('click', () => {
       window.open(explorerUrl(r.protx), '_blank', 'noopener');
@@ -2099,33 +2154,118 @@ INDEX_HTML_JS = r"""
   }
 
   // ---- Table ----
-  const body = document.getElementById('tbl-body');
-  // Sort: composite desc, nulls last.
-  const sorted = rows.slice().sort((a, b) => {
-    const ca = a.composite == null ? -1 : a.composite;
-    const cb = b.composite == null ? -1 : b.composite;
-    return cb - ca;
+
+  // Sort state
+  let sortCol = 'composite';
+  let sortDir = -1;  // -1 = desc, 1 = asc
+  let filterStr = '';
+
+  // Column type map: numeric vs lexicographic
+  const COL_NUMERIC = new Set(['composite', 'member_of', 'met', 'skipped', 'delta']);
+
+  function sortVal(r, col) {
+    if (col === 'delta') return Number(r.met || 0) - medianMet;
+    const v = r[col];
+    if (COL_NUMERIC.has(col)) return v == null ? -Infinity : Number(v);
+    return String(v == null ? '' : v).toLowerCase();
+  }
+
+  function renderTable() {
+    const needle = filterStr.toLowerCase();
+    const visible = rows.filter((r) =>
+      !needle || String(r.protx || '').toLowerCase().includes(needle)
+    );
+    visible.sort((a, b) => {
+      const va = sortVal(a, sortCol);
+      const vb = sortVal(b, sortCol);
+      if (va < vb) return sortDir;
+      if (va > vb) return -sortDir;
+      return 0;
+    });
+
+    const countEl = document.getElementById('filter-count');
+    if (needle) {
+      countEl.textContent = `Showing ${visible.length} of ${total}`;
+    } else {
+      countEl.textContent = `${total} validators`;
+    }
+
+    const body = document.getElementById('tbl-body');
+    body.innerHTML = '';
+    visible.forEach((r, i) => {
+      const delta = Math.round(Number(r.met || 0) - medianMet);
+      const deltaSign = delta > 0 ? '+' : '';
+      const deltaCls = delta > 0 ? 'delta-pos' : delta < 0 ? 'delta-neg' : '';
+      const deltaCell = deltaCls
+        ? `<span class="${deltaCls}">${deltaSign}${delta}</span>`
+        : `${deltaSign}${delta}`;
+
+      const protxLower = String(r.protx || '').toLowerCase();
+      const htmlLink = r.report_html
+        ? `<a href="${esc(r.report_html)}" title="${esc(r.protx)}">HTML</a>`
+        : '';
+      const jsonLink = r.report_json
+        ? `<a href="${esc(r.report_json)}">JSON</a>`
+        : '';
+      const explorerLink = `<a href="${explorerUrl(r.protx)}" target="_blank" rel="noopener">Explorer</a>`;
+      const sep = '<span class="report-sep">·</span>';
+      const reportLinks = [htmlLink, jsonLink, explorerLink].filter(Boolean).join(sep);
+
+      const tr = document.createElement('tr');
+      tr.innerHTML =
+        '<td>' + (i + 1) + '</td>' +
+        '<td><a href="' + esc(r.report_html || explorerUrl(r.protx)) + '"' +
+          ' title="' + esc(r.protx) + '">' +
+          '<code>' + esc(abbrev(r.protx)) + '</code></a></td>' +
+        '<td><span class="band band-' + esc(r.band || 'N/A').replace(/[^A-Za-z]/g, '') + '">' +
+          esc(r.band) + '</span></td>' +
+        '<td>' + (r.composite == null ? '—' : Number(r.composite).toFixed(4)) + '</td>' +
+        '<td>' + esc(r.member_of) + '</td>' +
+        '<td>' + esc(r.met) + '</td>' +
+        '<td class="' + deltaCls + '" title="Δ from median (' + medianMet + ')">' + deltaCell + '</td>' +
+        '<td>' + esc(r.skipped) + '</td>' +
+        '<td><code>' + esc(r.pose_status) + '</code></td>' +
+        '<td class="report-links">' + reportLinks + '</td>';
+      body.appendChild(tr);
+    });
+  }
+
+  // Filter input (fix #2)
+  const filterInput = document.getElementById('validator-filter');
+  filterInput.addEventListener('input', () => {
+    filterStr = filterInput.value;
+    renderTable();
   });
-  sorted.forEach((r, i) => {
-    const tr = document.createElement('tr');
-    tr.innerHTML =
-      '<td>' + (i + 1) + '</td>' +
-      '<td><a href="' + explorerUrl(r.protx) + '" target="_blank" rel="noopener">' +
-        '<code>' + esc(abbrev(r.protx)) + '</code></a></td>' +
-      '<td><span class="band band-' + esc(r.band || 'N/A').replace(/[^A-Za-z]/g, '') + '">' +
-        esc(r.band) + '</span></td>' +
-      '<td>' + (r.composite == null ? '—' : Number(r.composite).toFixed(4)) + '</td>' +
-      '<td>' + esc(r.member_of) + '</td>' +
-      '<td>' + esc(r.met) + '</td>' +
-      '<td>' + esc(r.skipped) + '</td>' +
-      '<td><code>' + esc(r.pose_status) + '</code></td>' +
-      '<td>' +
-        (r.report_html ? '<a href="' + esc(r.report_html) + '">html</a>' : '') +
-        (r.report_json ? (r.report_html ? ' &middot; ' : '') +
-          '<a href="' + esc(r.report_json) + '">json</a>' : '') +
-      '</td>';
-    body.appendChild(tr);
+
+  // Sort headers (fix #3)
+  document.querySelectorAll('th[data-col]').forEach((th) => {
+    const col = th.dataset.col;
+    th.addEventListener('click', () => {
+      if (sortCol === col) {
+        sortDir = -sortDir;
+      } else {
+        sortCol = col;
+        sortDir = col === 'protx' || col === 'pose_status' || col === 'band' ? 1 : -1;
+      }
+      // Update glyph on all headers
+      document.querySelectorAll('th[data-col]').forEach((h) => {
+        const g = h.querySelector('.sort-glyph');
+        if (h.dataset.col === sortCol) {
+          if (g) g.textContent = sortDir === -1 ? ' ▼' : ' ▲';
+          else h.insertAdjacentHTML('beforeend', `<span class="sort-glyph">${sortDir === -1 ? '▼' : '▲'}</span>`);
+        } else {
+          if (g) g.remove();
+        }
+      });
+      renderTable();
+    });
   });
+
+  // Initial render
+  renderTable();
+  // Set initial sort glyph on composite header
+  const initTh = document.querySelector('th[data-col="composite"]');
+  if (initTh) initTh.insertAdjacentHTML('beforeend', '<span class="sort-glyph">▼</span>');
 })();
 """
 
@@ -2546,13 +2686,42 @@ def parse_args() -> argparse.Namespace:
         help="In --all-platform mode, skip validators with an existing "
         "up-to-date report (matching window).",
     )
+    p.add_argument(
+        "--from-summary",
+        metavar="PATH",
+        default=None,
+        help="Re-render index.html from an existing summary.json without "
+        "re-fetching any chain data. PATH is the summary.json file; "
+        "index.html is written to the same directory.",
+    )
     return p.parse_args()
+
+
+def run_from_summary(summary_path: Path) -> int:
+    """Re-render index.html from an existing summary.json (no chain I/O)."""
+    if not summary_path.exists():
+        print(f"Error: {summary_path} not found.", file=sys.stderr)
+        return 1
+    out_dir = summary_path.parent
+    index_html = render_index_html(
+        generated_at=iso_utc(datetime.now(timezone.utc)),
+        window_desc=f"(re-rendered from {summary_path.name})",
+    )
+    index_path = out_dir / "index.html"
+    index_path.write_text(index_html, encoding="utf-8")
+    print(str(index_path.resolve()))
+    return 0
 
 
 def main() -> int:
     global VERBOSE
     args = parse_args()
     VERBOSE = args.verbose
+
+    out_dir = Path(args.out_dir) if args.out_dir else Path(__file__).parent / "reports"
+
+    if args.from_summary:
+        return run_from_summary(Path(args.from_summary))
 
     if args.all_platform and args.protx:
         print(
@@ -2576,8 +2745,6 @@ def main() -> int:
             )
             return 2
         args.protx = protx
-
-    out_dir = Path(args.out_dir) if args.out_dir else Path(__file__).parent / "reports"
 
     if args.all_platform:
         return run_batch(args, out_dir)
