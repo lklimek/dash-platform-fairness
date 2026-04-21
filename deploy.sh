@@ -284,7 +284,8 @@ fi
 
 # ---------- Extract deployed URL ----------
 # Pattern matches `https://<slug>.pages.dev` (CF-generated preview/prod URL).
-deployed_url="$(grep -Eo 'https://[a-z0-9-]+\.pages\.dev' "${out_file}" | tail -1 || true)"
+# Allow dots in subdomain — preview URLs are `<hash>.<project>.pages.dev`.
+deployed_url="$(grep -Eo 'https://[a-z0-9.-]+\.pages\.dev' "${out_file}" | tail -1 || true)"
 
 if [[ -z "${deployed_url}" ]]; then
     err "Could not extract a *.pages.dev URL from wrangler output."
