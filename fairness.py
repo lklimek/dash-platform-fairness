@@ -1898,7 +1898,7 @@ INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
 
 <div class="footnote-block">
   <p>Algorithm v__ALGO__. Each dot is one validator; hover for details, click to open
-     platform-explorer.com. Per-validator JSON and HTML reports live alongside this file.</p>
+     the per-validator report. The table below also links to JSON data and platform-explorer.com.</p>
 </div>
 
 <section class="card">
@@ -2679,7 +2679,10 @@ INDEX_HTML_JS = r"""
     dot.addEventListener('mousemove', (e) => { showTip(e, r); });
     dot.addEventListener('mouseleave', hideTip);
     dot.addEventListener('click', () => {
-      window.open(explorerUrl(r.protx), '_blank', 'noopener');
+      // Prefer the per-validator HTML report; fall back to platform-explorer
+      // only if the report is missing (e.g. older summary.json schema).
+      const href = r.report_html || explorerUrl(r.protx);
+      window.open(href, '_blank', 'noopener');
     });
   }
 
