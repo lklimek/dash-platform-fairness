@@ -1860,7 +1860,7 @@ INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
 </section>
 
 <section class="card" id="dist-card">
-  <h2>Quorum-selection distribution &mdash; validators active the whole window</h2>
+  <h2 title="n=__DIST_N__ validators that were eligible throughout the whole analysis window; excludes mid-window registrations, deregistrations, and banned nodes.">Quorum-selection distribution &mdash; validators active the whole window</h2>
   <p class="legend-note" id="dist-subtitle">Loading&hellip;</p>
   <div id="dist-wrap" style="position:relative;overflow-x:auto;">
     <svg id="dist-hist" role="img" aria-label="Histogram of member_of counts with theoretical expected distribution curve"></svg>
@@ -1877,10 +1877,10 @@ INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
     <div id="tooltip" class="tooltip" style="display:none;"></div>
   </div>
   <div class="legend">
-    <span class="legend-item"><span class="sw sw-Excellent"></span>Excellent</span>
-    <span class="legend-item"><span class="sw sw-Good"></span>Good</span>
-    <span class="legend-item"><span class="sw sw-Concerning"></span>Concerning</span>
-    <span class="legend-item"><span class="sw sw-Poor"></span>Poor</span>
+    <span class="legend-item" title="Excellent &#8805; 0.95"><span class="sw sw-Excellent"></span>Excellent</span>
+    <span class="legend-item" title="Good &#8805; 0.85"><span class="sw sw-Good"></span>Good</span>
+    <span class="legend-item" title="Concerning &#8805; 0.70"><span class="sw sw-Concerning"></span>Concerning</span>
+    <span class="legend-item" title="Poor &lt; 0.70"><span class="sw sw-Poor"></span>Poor</span>
   </div>
   <p class="legend-note">
     X axis groups validators by PoSe / eligibility state. The first three
@@ -1912,16 +1912,16 @@ INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
     <table id="tbl">
       <thead>
         <tr>
-          <th>#</th>
-          <th data-col="protx" data-type="lex">Pro TX</th>
-          <th data-col="band" data-type="lex">Band</th>
-          <th data-col="composite" data-type="num">Composite</th>
-          <th data-col="member_of" data-type="num">Member of</th>
-          <th data-col="met" data-type="num">MET</th>
-          <th data-col="delta" data-type="num">&#916; median</th>
-          <th data-col="skipped" data-type="num">SKIPPED</th>
-          <th data-col="pose_status" data-type="lex">PoSe status</th>
-          <th>Report</th>
+          <th title="Row number in current sort order.">#</th>
+          <th data-col="protx" data-type="lex" title="First 8 + last 8 hex of the validator&#39;s pro_tx_hash. Click the row link to open the detailed report; click the Explorer link for on-chain data.">Pro TX</th>
+          <th data-col="band" data-type="lex" title="Composite score band: Excellent &#8805; 0.95 · Good &#8805; 0.85 · Concerning &#8805; 0.70 · Poor &lt; 0.70.">Band</th>
+          <th data-col="composite" data-type="num" title="Overall fairness score: 0.30 &#215; selection + 0.50 &#215; participation + 0.20 &#215; liveness. Range 0&#8211;1.">Composite</th>
+          <th data-col="member_of" data-type="num" title="Number of quorums this validator was selected into during the window.">Member of</th>
+          <th data-col="met" data-type="num" title="Number of quorums where the validator actually proposed a block (out of those it was a member of).">MET</th>
+          <th data-col="delta" data-type="num" title="Delta from mean MET across validators that were active the whole window (n=__DIST_N__). Positive = above typical peer; negative = below. Registered/deregistered-in-window and recently-banned peers are excluded from the baseline to avoid deflating it.">&#916; mean</th>
+          <th data-col="skipped" data-type="num" title="Quorums where this validator was expected to propose (its rotation slot) but didn&#39;t — cover-up by the next member.">SKIPPED</th>
+          <th data-col="pose_status" data-type="lex" title="Eligibility category during the window. &#39;active whole window&#39; = fully eligible throughout. See README for the other categories.">PoSe status</th>
+          <th title="HTML = pretty report · JSON = raw data · Explorer = platform-explorer.com">Report</th>
         </tr>
       </thead>
       <tbody id="tbl-body"></tbody>
@@ -2165,13 +2165,23 @@ INDEX_HTML_JS = r"""
     const yTop = Math.ceil(maxCount * 1.15);
 
     // Sigma bands (±1σ and ±2σ)
+    const sigmaBandTitles = [
+      '±2σ band: ' + (mu - 2*sigma).toFixed(1) + '–' + (mu + 2*sigma).toFixed(1) +
+          '. ±1σ and ±2σ of the active-whole-window cohort. Under random sortition this shape should approximate a normal distribution.',
+      '±1σ band: ' + (mu - sigma).toFixed(1) + '–' + (mu + sigma).toFixed(1) +
+          '. Validators outside ±2σ warrant operator attention.',
+    ];
+    let sigmaIdx = 0;
     for (const [lo, hi] of [[mu - 2*sigma, mu + 2*sigma], [mu - sigma, mu + sigma]]) {
       const bx = Math.max(hxScale(lo), HM.left);
       const bw = Math.min(hxScale(hi), HM.left + hPlotW) - bx;
-      mkSvg('rect', {
+      const band = mkSvg('rect', {
         class: 'dist-sigma-band',
         x: bx, y: HM.top, width: Math.max(bw, 0), height: hPlotH,
       }, histSvg);
+      const bt = document.createElementNS(SVG_NS, 'title');
+      bt.textContent = sigmaBandTitles[sigmaIdx++];
+      band.appendChild(bt);
     }
 
     // Gridlines + y-axis ticks
@@ -2206,11 +2216,18 @@ INDEX_HTML_JS = r"""
       const cy = hyScale(p.y * curveScale);
       return cx + ',' + cy;
     }).join(' ');
-    mkSvg('polyline', {class: 'dist-curve', points: pts, 'vector-effect': 'non-scaling-stroke'}, histSvg);
+    const curveEl = mkSvg('polyline', {class: 'dist-curve', points: pts, 'vector-effect': 'non-scaling-stroke'}, histSvg);
+    const curveTitle = document.createElementNS(SVG_NS, 'title');
+    curveTitle.textContent = 'Expected distribution under random sortition (normal approximation of Binomial, μ=' +
+        mu.toFixed(2) + ', σ=' + sigma.toFixed(2) + '). Deviations beyond ±2σ warrant operator attention.';
+    curveEl.appendChild(curveTitle);
 
     // Mean line
     const mx = hxScale(mu);
-    mkSvg('line', {class: 'dist-mean-line', x1: mx, x2: mx, y1: HM.top, y2: HM.top + hPlotH}, histSvg);
+    const distMeanLine = mkSvg('line', {class: 'dist-mean-line', x1: mx, x2: mx, y1: HM.top, y2: HM.top + hPlotH}, histSvg);
+    const dmlTitle = document.createElementNS(SVG_NS, 'title');
+    dmlTitle.textContent = 'Arithmetic mean of member_of across the active-whole-window cohort (n=' + n + ', μ=' + mu.toFixed(2) + ').';
+    distMeanLine.appendChild(dmlTitle);
     const mlabel = mkSvg('text', {
       class: 'dist-axis', x: mx + 4, y: HM.top + 12, 'text-anchor': 'start',
       style: 'font-size:10px;',
@@ -2330,8 +2347,10 @@ INDEX_HTML_JS = r"""
     document.getElementById('dist-footnote').innerHTML =
         '<span class="dist-legend">' +
         '<span class="dist-legend-item"><span class="dist-swatch dist-swatch-bar">&nbsp;</span> Observed count per bin (width 2)</span>' +
-        '<span class="dist-legend-item"><span class="dist-swatch dist-swatch-curve"></span> Expected distribution (theoretical normal, μ='+mu.toFixed(2)+', σ='+sigma.toFixed(2)+')</span>' +
-        '<span class="dist-legend-item"><span class="dist-swatch dist-swatch-mean"></span> Mean (μ)</span>' +
+        '<span class="dist-legend-item" title="Expected distribution under random sortition (normal approximation of Binomial). Deviations beyond ±2σ warrant operator attention.">' +
+            '<span class="dist-swatch dist-swatch-curve"></span> Expected distribution (theoretical normal, μ='+mu.toFixed(2)+', σ='+sigma.toFixed(2)+')</span>' +
+        '<span class="dist-legend-item" title="Arithmetic mean of member_of across the active-whole-window cohort.">' +
+            '<span class="dist-swatch dist-swatch-mean"></span> Mean (μ)</span>' +
         '<span class="dist-legend-item">Dot colour = band; each dot = one validator</span>' +
         '</span>';
   })();
@@ -2392,15 +2411,18 @@ INDEX_HTML_JS = r"""
     return;
   }
 
-  // Compute median of met values across all rows (fix #5, #9).
-  function median(arr) {
-    if (!arr.length) return 0;
-    const s = arr.slice().sort((a, b) => a - b);
-    const m = Math.floor(s.length / 2);
-    return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
-  }
-  const metValues = rows.map((r) => Number(r.met || 0));
-  const medianMet = median(metValues);
+  // Unified baseline: mean MET across active_whole_window cohort (same cohort
+  // as the distribution chart). This keeps the scatter reference line and the
+  // table Δ column consistent with the distribution chart's μ marker.
+  const meanMetActive = META.dist && META.dist.mean_met != null
+      ? META.dist.mean_met
+      : (() => {
+          // Fallback: compute locally if boot-meta lacks the field (old summary.json).
+          const active = rows.filter((r) => r.pose_status === 'active_whole_window');
+          if (!active.length) return 0;
+          return active.reduce((s, r) => s + Number(r.met || 0), 0) / active.length;
+        })();
+  const activeN = META.dist && META.dist.n != null ? META.dist.n : 0;
 
   // Header meta
   const total = rows.length;
@@ -2410,8 +2432,14 @@ INDEX_HTML_JS = r"""
     bandCounts[b] = (bandCounts[b] || 0) + 1;
   }
   const windowDesc = META.window_desc || '';
+  // Parse days hint from windowDesc (e.g. "30-day window")
+  const dayMatch = windowDesc.match(/(\d+)-day/);
+  const windowTitle = dayMatch
+      ? `Configured via --days. Default 30 days.`
+      : 'Analysis window duration.';
   document.getElementById('header-meta').innerHTML =
-      `${total} validators  &middot;  ${esc(windowDesc)}  ` +
+      `<span title="Total number of Evo validators found on-chain during this window.">${total} validators</span>` +
+      `  &middot;  <span title="${esc(windowTitle)}">${esc(windowDesc)}</span>  ` +
       `&middot;  generated ${esc(META.generated_at || '')}`;
 
   const bandStats = document.getElementById('band-stats');
@@ -2542,6 +2570,9 @@ INDEX_HTML_JS = r"""
       x: perfMid, y: M.top - 22, 'text-anchor': 'middle',
     });
     pc.textContent = 'Performance issues';
+    const pcTitle = document.createElementNS(SVG_NS, 'title');
+    pcTitle.textContent = 'Validators in this group were fully eligible or had a performance event (ban/revival) during the window. Their scores are directly comparable to each other.';
+    pc.appendChild(pcTitle);
     // Eligibility caption (centred over the eligibility half)
     const eligMid = (xCenter(groupChangeIdx) + xCenter(catCount - 1)) / 2;
     const ec = addSvg('text', {
@@ -2549,6 +2580,9 @@ INDEX_HTML_JS = r"""
       x: eligMid, y: M.top - 22, 'text-anchor': 'middle',
     });
     ec.textContent = 'Limited eligibility';
+    const ecTitle = document.createElementNS(SVG_NS, 'title');
+    ecTitle.textContent = 'Validators that registered or deregistered mid-window. They were live for only part of the window; their scores are normalised via eligible_fraction and should not be compared directly with the performance group.';
+    ec.appendChild(ecTitle);
   }
 
   // Y-axis label
@@ -2560,26 +2594,42 @@ INDEX_HTML_JS = r"""
     transform: 'rotate(-90)',
   });
   yLabel.textContent = 'Proposed blocks (MET)';
+  const yLabelTitle = document.createElementNS(SVG_NS, 'title');
+  yLabelTitle.textContent = 'MET = quorums where this validator actually proposed a block.';
+  yLabel.appendChild(yLabelTitle);
 
   // (No in-SVG title — the surrounding <h2> already names the chart and a
   // second title crowds the group-separator captions.)
 
-  // Median line (fix #5): drawn before dots so it renders behind them.
-  const medY = yScale(medianMet);
-  addSvg('line', {
+  // Mean-MET line (active_whole_window cohort): drawn before dots so it
+  // renders behind them. Matches the distribution chart's μ marker.
+  const meanY = yScale(meanMetActive);
+  const meanLine = addSvg('line', {
     class: 'gridline',
     x1: M.left, x2: M.left + plotW,
-    y1: medY, y2: medY,
+    y1: meanY, y2: meanY,
     style: 'stroke-dasharray:6,4;stroke-width:1.5;opacity:0.7;',
   });
-  const medLabel = addSvg('text', {
+  // SVG-native tooltip via <title> child element.
+  const meanLineTitle = document.createElementNS(SVG_NS, 'title');
+  meanLineTitle.textContent =
+      'Mean MET across active_whole_window cohort (n=' + activeN + '). ' +
+      'Formula: arithmetic mean of proposed-block counts for validators that ' +
+      'were fully eligible throughout the entire analysis window. ' +
+      'Registered/deregistered-in-window and banned validators are excluded ' +
+      'to avoid deflating the baseline.';
+  meanLine.appendChild(meanLineTitle);
+
+  const meanLabelN = activeN ? ' (n=' + activeN + ')' : '';
+  const meanLabel = addSvg('text', {
     class: 'axis',
     x: M.left + plotW + 6,
-    y: medY + 4,
+    y: meanY + 4,
     'text-anchor': 'start',
     style: 'font-size:10px;',
   });
-  medLabel.textContent = 'median: ' + Math.round(medianMet);
+  meanLabel.textContent = 'mean MET — active whole window' + meanLabelN + ': ' +
+      meanMetActive.toFixed(1);
 
   // Tooltip
   const tip = document.getElementById('tooltip');
@@ -2596,7 +2646,8 @@ INDEX_HTML_JS = r"""
         'member_of: ' + esc(r.member_of) + '<br>' +
         'band: ' + esc(r.band) + ' (' +
         (r.composite == null ? '—' : Number(r.composite).toFixed(4)) + ')' +
-        limitedNote;
+        limitedNote +
+        '<br><em>z-score and full breakdown in per-validator report</em>';
     positionTip(evt);
   }
   function positionTip(evt) {
@@ -2643,7 +2694,7 @@ INDEX_HTML_JS = r"""
   const COL_NUMERIC = new Set(['composite', 'member_of', 'met', 'skipped', 'delta']);
 
   function sortVal(r, col) {
-    if (col === 'delta') return Number(r.met || 0) - medianMet;
+    if (col === 'delta') return Number(r.met || 0) - meanMetActive;
     const v = r[col];
     if (COL_NUMERIC.has(col)) return v == null ? -Infinity : Number(v);
     return String(v == null ? '' : v).toLowerCase();
@@ -2672,12 +2723,12 @@ INDEX_HTML_JS = r"""
     const body = document.getElementById('tbl-body');
     body.innerHTML = '';
     visible.forEach((r, i) => {
-      const delta = Math.round(Number(r.met || 0) - medianMet);
+      const delta = Math.round(Number(r.met || 0) - meanMetActive);
       const deltaSign = delta > 0 ? '+' : '';
       const deltaCls = delta > 0 ? 'delta-pos' : delta < 0 ? 'delta-neg' : '';
       const limited = LIMITED_ELIGIBILITY.has(r.pose_status);
       const mark = limited
-        ? '<abbr class="eligibility-mark" title="Limited eligibility: validator was live for only part of the window — Δ against the full-window median is not directly comparable.">*</abbr>'
+        ? '<abbr class="eligibility-mark" title="Limited eligibility: validator was live for only part of the window — Δ against the active-whole-window mean is not directly comparable.">*</abbr>'
         : '';
       const deltaInner = deltaCls
         ? `<span class="${deltaCls}">${deltaSign}${delta}</span>`
@@ -2695,8 +2746,8 @@ INDEX_HTML_JS = r"""
       const reportLinks = [htmlLink, jsonLink, explorerLink].filter(Boolean).join(sep);
 
       const deltaTitle = limited
-        ? `Δ from median (${medianMet}) — limited eligibility, see legend`
-        : `Δ from median (${medianMet})`;
+        ? `Δ from mean MET (${meanMetActive.toFixed(1)}, active-whole-window cohort, n=${activeN}) — limited eligibility, see legend`
+        : `Δ from mean MET (${meanMetActive.toFixed(1)}, active-whole-window cohort, n=${activeN})`;
 
       const tr = document.createElement('tr');
       tr.innerHTML =
@@ -2807,6 +2858,8 @@ def _build_dist_meta(validators: list[dict]) -> dict:
     mu = mean(mo_values)
     sigma = stdev(mo_values)
     n = len(cohort)
+    met_values = [int(v.get("met", 0) or 0) for v in cohort]
+    mean_met = mean(met_values) if met_values else 0.0
 
     # Per-dot data for the strip plot.
     dots = [
@@ -2843,6 +2896,7 @@ def _build_dist_meta(validators: list[dict]) -> dict:
         "n": n,
         "mu": round(mu, 4),
         "sigma": round(sigma, 4),
+        "mean_met": round(mean_met, 4),
         "norm_scale": round(norm_scale, 6),
         "dots": dots,
         "curve": curve,
@@ -2866,6 +2920,7 @@ def render_index_html(
         INDEX_HTML_TEMPLATE.replace("__CSS__", INDEX_HTML_CSS)
         .replace("__JS__", INDEX_HTML_JS)
         .replace("__ALGO__", ALGO_VERSION)
+        .replace("__DIST_N__", str(dist_meta["n"]))
         .replace("__BOOT_META__", boot_json)
     )
 
