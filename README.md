@@ -142,11 +142,6 @@ part of the window. Their `selection` axis is normalised via
 directly comparable to the performance buckets. The index scatter chart
 places them in a separate visual section for exactly this reason.
 
-**Backward compatibility**: older `summary.json` files may contain the
-legacy values `never` and `revived_before_window`. These are automatically
-remapped to `active_whole_window` at render time (`--from-summary`) — no
-batch re-run is needed. New batch runs natively emit the 5-value scheme.
-
 Per-validator JSON adds `eligibility.deregistered_core_height` (null for
 MNs still registered at tip; the core height at which the MN was removed
 from `protx list evo` otherwise).

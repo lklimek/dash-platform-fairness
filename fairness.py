@@ -48,15 +48,8 @@ DEFAULT_COMPOSITE_WEIGHTS = {"selection": 0.30, "participation": 0.50, "liveness
 # window". Only these nodes contribute to the peer baseline (member_of median):
 # partial-eligibility peers (registered mid-window, deregistered mid-window,
 # revived mid-window, currently banned) get SCORED AGAINST the baseline, not
-# used to DEFINE it. Including the legacy pre-merge values keeps the filter
-# backward-compatible with older summary.json blobs.
-ALWAYS_ELIGIBLE_POSE_STATUSES = frozenset(
-    {
-        "active_whole_window",  # current merged category (v0.2.0+)
-        "never",  # legacy pre-merge
-        "revived_before_window",  # legacy pre-merge
-    }
-)
+# used to DEFINE it.
+ALWAYS_ELIGIBLE_POSE_STATUSES = frozenset({"active_whole_window"})
 
 DEFAULT_CORE_CMD = "docker exec dashmate_2d59c0c6_mainnet-core-1 dash-cli"
 DEFAULT_CORE_CMD_FALLBACK = "dash-cli"
@@ -1464,11 +1457,6 @@ def classify_pose_status(report: dict[str, Any], core_lo: int | None = None) -> 
     diagnostic *eligibility* categories, separate from performance issues.
     Dereg takes precedence over ban/registered because a MN that is no longer
     in the registry is the most specific statement we can make about it.
-
-    Previously emitted `never` and `revived_before_window` are now unified
-    into `active_whole_window` — both represent validators that were fully
-    eligible for the entire window and follow the same theoretical selection
-    distribution under random sortition.
     """
     el = report.get("eligibility", {})
     pose_events = el.get("pose_events", []) or []
@@ -2318,10 +2306,13 @@ INDEX_HTML_JS = r"""
 
       el.addEventListener('mousemove', (e) => { showDistTip(e, dot); });
       el.addEventListener('mouseleave', hideDistTip);
-      el.addEventListener('click', () => {
-        const href = dot.report_html || explorerUrl(dot.protx);
-        window.open(href, '_blank', 'noopener');
-      });
+      if (dot.report_html) {
+        el.addEventListener('click', () => {
+          window.open(dot.report_html, '_blank', 'noopener');
+        });
+      } else {
+        el.style.cursor = 'default';
+      }
       dotEls.push({el, bi, dot});
     }
 
@@ -2359,8 +2350,6 @@ INDEX_HTML_JS = r"""
   // actual behaviour), last 2 are "eligibility" buckets (limited window
   // coverage — not a performance signal). A visual separator between them
   // stops operators from mistakenly comparing apples to oranges.
-  // Legacy 6-category summary.json (never + revived_before_window) is
-  // normalized to active_whole_window by the Python renderer before embedding.
   const POSE_CATEGORIES = [
     {key: 'active_whole_window',       label: 'Active whole window',       group: 'performance'},
     {key: 'revived_in_window',         label: 'Revived in window',         group: 'performance'},
@@ -2678,12 +2667,13 @@ INDEX_HTML_JS = r"""
     });
     dot.addEventListener('mousemove', (e) => { showTip(e, r); });
     dot.addEventListener('mouseleave', hideTip);
-    dot.addEventListener('click', () => {
-      // Prefer the per-validator HTML report; fall back to platform-explorer
-      // only if the report is missing (e.g. older summary.json schema).
-      const href = r.report_html || explorerUrl(r.protx);
-      window.open(href, '_blank', 'noopener');
-    });
+    if (r.report_html) {
+      dot.addEventListener('click', () => {
+        window.open(r.report_html, '_blank', 'noopener');
+      });
+    } else {
+      dot.style.cursor = 'default';
+    }
   }
 
   // ---- Table ----
@@ -2752,12 +2742,14 @@ INDEX_HTML_JS = r"""
         ? `Δ from mean MET (${meanMetActive.toFixed(1)}, active-whole-window cohort, n=${activeN}) — limited eligibility, see legend`
         : `Δ from mean MET (${meanMetActive.toFixed(1)}, active-whole-window cohort, n=${activeN})`;
 
+      const protxCode = '<code>' + esc(abbrev(r.protx)) + '</code>';
+      const protxCell = r.report_html
+        ? '<a href="' + esc(r.report_html) + '" title="' + esc(r.protx) + '">' + protxCode + '</a>'
+        : '<span title="' + esc(r.protx) + '">' + protxCode + '</span>';
       const tr = document.createElement('tr');
       tr.innerHTML =
         '<td>' + (i + 1) + '</td>' +
-        '<td><a href="' + esc(r.report_html || explorerUrl(r.protx)) + '"' +
-          ' title="' + esc(r.protx) + '">' +
-          '<code>' + esc(abbrev(r.protx)) + '</code></a></td>' +
+        '<td>' + protxCell + '</td>' +
         '<td><span class="band band-' + esc(r.band || 'N/A').replace(/[^A-Za-z]/g, '') + '">' +
           esc(r.band) + '</span></td>' +
         '<td>' + (r.composite == null ? '—' : Number(r.composite).toFixed(4)) + '</td>' +
@@ -2828,23 +2820,10 @@ def _format_window_desc(w: dict) -> str:
     return "  ·  ".join(parts)
 
 
-def normalize_pose_status(s: str) -> str:
-    """Map legacy 6-category pose_status values to the current 5-category scheme.
-
-    Older summary.json files may contain ``never`` or ``revived_before_window``.
-    Both represent validators that were fully eligible for the entire window and
-    are merged into ``active_whole_window`` for all user-facing rendering.
-    """
-    if s in ("never", "revived_before_window"):
-        return "active_whole_window"
-    return s
-
-
 def _build_dist_meta(validators: list[dict]) -> dict:
     """Pre-compute selection-distribution data for the active-whole-window cohort.
 
-    Cohort = validators whose pose_status is ``active_whole_window`` (or the
-    legacy equivalents ``never`` / ``revived_before_window``).  These were
+    Cohort = validators whose pose_status is ``active_whole_window``.  These were
     fully eligible for the entire analysis window, so their member_of counts
     follow the same theoretical distribution (roughly binomial -> normal
     approximation).  Pre-computing mu, sigma, z-scores and the theoretical
@@ -2852,8 +2831,7 @@ def _build_dist_meta(validators: list[dict]) -> dict:
     """
     import math
 
-    COHORT_STATUSES = {"active_whole_window", "never", "revived_before_window"}
-    cohort = [v for v in validators if v.get("pose_status") in COHORT_STATUSES]
+    cohort = [v for v in validators if v.get("pose_status") == "active_whole_window"]
     if len(cohort) < 2:
         return {"n": len(cohort), "mu": 0.0, "sigma": 1.0, "dots": [], "curve": []}
 
@@ -3508,11 +3486,6 @@ def run_from_summary(summary_path: Path) -> int:
         # Legacy format: plain list — no window metadata available.
         window_desc = f"(re-rendered from {summary_path.name})"
         validators = data if isinstance(data, list) else []
-    # Normalize legacy 6-category pose_status to current 5-category scheme.
-    validators = [
-        {**v, "pose_status": normalize_pose_status(v.get("pose_status", ""))}
-        for v in validators
-    ]
     index_html = render_index_html(
         generated_at=iso_utc(datetime.now(timezone.utc)),
         window_desc=window_desc,
