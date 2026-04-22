@@ -18,6 +18,17 @@ export HOME
 PATH="/usr/local/bin:/usr/bin:/bin:${HOME}/.local/bin:/snap/bin${PATH:+:${PATH}}"
 export PATH
 
+# ---------- Load nvm (cron runs no rc files, so load it explicitly) ----------
+export NVM_DIR="${NVM_DIR:-${HOME}/.nvm}"
+if [[ -s "${NVM_DIR}/nvm.sh" ]]; then
+    # nvm.sh isn't strict-mode-clean in all versions; relax briefly.
+    set +u
+    # shellcheck disable=SC1091
+    \. "${NVM_DIR}/nvm.sh"
+    nvm use default >/dev/null 2>&1 || nvm use --lts >/dev/null 2>&1 || true
+    set -u
+fi
+
 # ---------- Configurable defaults ----------
 DAYS="${DAYS:-30}"
 PYTHON="${PYTHON:-python3}"
