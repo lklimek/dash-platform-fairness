@@ -1861,7 +1861,7 @@ INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
 <section class="card">
   <h2>Proposed blocks vs PoSe status</h2>
   <div id="chart-wrap" style="position:relative;overflow-x:auto;">
-    <svg id="chart" width="980" height="500" role="img" aria-label="Scatter chart of proposed blocks vs PoSe status"></svg>
+    <svg id="chart" height="500" role="img" aria-label="Scatter chart of proposed blocks vs PoSe status"></svg>
     <div id="tooltip" class="tooltip" style="display:none;"></div>
   </div>
   <div class="legend">
@@ -2049,6 +2049,9 @@ th[data-col]:hover { background: rgba(100,150,250,0.07); }
 @media (prefers-color-scheme: dark) { .report-sep { color: #2a2e36; } }
 .delta-pos { color: var(--delta-pos); }
 .delta-neg { color: var(--delta-neg); }
+/* Scatter + distribution charts fill their container width so the
+   right-edge margin labels never clip on narrow viewports. */
+#chart { display: block; width: 100%; height: 500px; }
 /* Distribution chart */
 #dist-hist, #dist-strip { display: block; width: 100%; }
 .dist-bar { fill: #7eb8f7; fill-opacity: 0.65; }
@@ -2609,16 +2612,26 @@ INDEX_HTML_JS = r"""
       'to avoid deflating the baseline.';
   meanLine.appendChild(meanLineTitle);
 
+  // Split the mean-MET label onto two lines so it never clips the right
+  // edge on narrow viewports. Line 1 = cohort description; line 2 = μ value.
+  const meanLabelX = M.left + plotW + 6;
   const meanLabelN = activeN ? ' (n=' + activeN + ')' : '';
   const meanLabel = addSvg('text', {
     class: 'axis',
-    x: M.left + plotW + 6,
-    y: meanY + 4,
+    x: meanLabelX,
+    y: meanY - 2,
     'text-anchor': 'start',
     style: 'font-size:10px;',
   });
-  meanLabel.textContent = 'mean MET — active whole window' + meanLabelN + ': ' +
-      meanMetActive.toFixed(1);
+  const tspan1 = document.createElementNS(SVG_NS, 'tspan');
+  tspan1.setAttribute('x', meanLabelX);
+  tspan1.textContent = 'mean MET — active whole window' + meanLabelN;
+  const tspan2 = document.createElementNS(SVG_NS, 'tspan');
+  tspan2.setAttribute('x', meanLabelX);
+  tspan2.setAttribute('dy', '1.2em');
+  tspan2.textContent = 'μ = ' + meanMetActive.toFixed(1);
+  meanLabel.appendChild(tspan1);
+  meanLabel.appendChild(tspan2);
 
   // Tooltip
   const tip = document.getElementById('tooltip');
