@@ -2395,8 +2395,10 @@ INDEX_HTML_JS = r"""
     const resp = await fetch('summary.json', {cache: 'no-store'});
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
     const data = await resp.json();
-    // Support both new object format {window, validators} and legacy plain array.
-    rows = Array.isArray(data) ? data : (data.validators || []);
+    if (!data || typeof data !== 'object' || !Array.isArray(data.validators)) {
+      throw new Error('Invalid summary.json: expected {window, validators} object');
+    }
+    rows = data.validators;
   } catch (e) {
     document.getElementById('header-meta').textContent =
         'Failed to load summary.json: ' + e.message;
@@ -2407,13 +2409,7 @@ INDEX_HTML_JS = r"""
   // as the distribution chart). This keeps the scatter reference line and the
   // table Δ column consistent with the distribution chart's μ marker.
   const meanMetActive = META.dist && META.dist.mean_met != null
-      ? META.dist.mean_met
-      : (() => {
-          // Fallback: compute locally if boot-meta lacks the field (old summary.json).
-          const active = rows.filter((r) => r.pose_status === 'active_whole_window');
-          if (!active.length) return 0;
-          return active.reduce((s, r) => s + Number(r.met || 0), 0) / active.length;
-        })();
+      ? META.dist.mean_met : 0;
   const activeN = META.dist && META.dist.n != null ? META.dist.n : 0;
 
   // Header meta
@@ -3492,13 +3488,18 @@ def run_from_summary(summary_path: Path) -> int:
         return 1
     out_dir = summary_path.parent
     data = json.loads(summary_path.read_text(encoding="utf-8"))
-    if isinstance(data, dict) and "window" in data:
-        window_desc = _format_window_desc(data["window"])
-        validators = data.get("validators", [])
-    else:
-        # Legacy format: plain list — no window metadata available.
-        window_desc = f"(re-rendered from {summary_path.name})"
-        validators = data if isinstance(data, list) else []
+    if (
+        not isinstance(data, dict)
+        or "window" not in data
+        or not isinstance(data.get("validators"), list)
+    ):
+        print(
+            "Error: Invalid summary.json: expected {window, validators} object.",
+            file=sys.stderr,
+        )
+        return 1
+    window_desc = _format_window_desc(data["window"])
+    validators = data["validators"]
     index_html = render_index_html(
         generated_at=iso_utc(datetime.now(timezone.utc)),
         window_desc=window_desc,
