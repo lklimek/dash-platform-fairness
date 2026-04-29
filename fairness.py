@@ -2723,9 +2723,10 @@ INDEX_HTML_JS = r"""
     y1: M.top, y2: M.top + plotH,
   });
 
-  // X-axis category labels + between-slot gridlines. Skip the gridline at
-  // the group boundary — the explicit separator below replaces it and a
-  // faint gridline next to a bold separator reads as noise.
+  // X-axis category labels + between-slot gridlines. At the group boundary
+  // we draw gridlines at BOTH edges of the gap (so every column is bounded
+  // by an equally-spaced vertical line) and the dashed separator below
+  // sits down the middle of the gap as a semantic divider.
   // Long labels are wrapped onto two lines so they don't overlap when the
   // chart is narrow. Heuristic: split on the first space if the label is
   // longer than 10 chars.
@@ -2733,6 +2734,13 @@ INDEX_HTML_JS = r"""
     if (s.length <= 10 || !s.includes(' ')) return [s];
     const i = s.indexOf(' ');
     return [s.slice(0, i), s.slice(i + 1)];
+  }
+  function vGridline(x) {
+    addSvg('line', {
+      class: 'gridline',
+      x1: x, x2: x,
+      y1: M.top, y2: M.top + plotH,
+    });
   }
   for (let i = 0; i < catCount; i++) {
     const cx = xCenter(i);
@@ -2748,12 +2756,14 @@ INDEX_HTML_JS = r"""
       t.appendChild(ts);
     });
     if (i > 0 && i !== groupChangeIdx) {
-      addSvg('line', {
-        class: 'gridline',
-        x1: slotLeft(i), x2: slotLeft(i),
-        y1: M.top, y2: M.top + plotH,
-      });
+      vGridline(slotLeft(i));
     }
+  }
+  if (hasSeparator) {
+    // Borders of the inter-group gap, so the columns flanking it are the
+    // same visual width as every other column.
+    vGridline(slotLeft(groupChangeIdx - 1) + unitW);
+    vGridline(slotLeft(groupChangeIdx));
   }
 
   // Group separator + captions: visually split the chart into two
