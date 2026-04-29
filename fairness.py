@@ -1206,12 +1206,19 @@ def score_validator_from_cache(
 
             ts_lo = iso_utc(cache.blocks[agg.lo].time)
             ts_hi = iso_utc(cache.blocks[agg.hi].time)
+            exp_h_for_ts = tv["target_expected_slot_height"]
+            expected_slot_time = (
+                iso_utc(cache.blocks[exp_h_for_ts].time)
+                if exp_h_for_ts is not None
+                else None
+            )
             member_quorums_detail.append(
                 {
                     "quorum_hash": agg.quorum_hash,
                     "range": [agg.lo, agg.hi],
                     "ts": [ts_lo, ts_hi],
                     "expected_slot_height": tv["target_expected_slot_height"],
+                    "expected_slot_time": expected_slot_time,
                     "actual_proposals": tv["target_actual_proposals"],
                     "status": st,
                 }
@@ -1556,6 +1563,27 @@ summary { cursor: pointer; font-weight: 600; font-size: 14px; padding: 4px 0; }
 .row-skipped td { background: rgba(255, 80, 80, 0.08); }
 .row-inconclusive td { background: rgba(255, 200, 0, 0.08); }
 footer { margin-top: 30px; font-size: 12px; color: #667085; }
+.pot-wrap { width: 100%; }
+.pot-svg { width: 100%; height: 240px; display: block; }
+.pot-axis text { font-size: 11px; fill: #667085; }
+.pot-axis line, .pot-axis path { stroke: #c7ccd6; }
+.pot-grid { stroke: #e4e7ec; stroke-dasharray: 2,3; }
+.pot-dot-met { fill: #1f9d55; stroke: #fff; stroke-width: 1; }
+.pot-dot-skipped { fill: #d63a3a; stroke: #fff; stroke-width: 1; }
+.pot-legend { display: flex; gap: 18px; align-items: center; font-size: 12px;
+              color: #667085; margin-top: 6px; }
+.pot-legend .sw { display: inline-block; width: 10px; height: 10px;
+                  border-radius: 50%; margin-right: 6px; vertical-align: middle; }
+.pot-legend .sw-met { background: #1f9d55; }
+.pot-legend .sw-skipped { background: #d63a3a; }
+@media (prefers-color-scheme: dark) {
+  .pot-axis text { fill: #aeb4c0; }
+  .pot-axis line, .pot-axis path { stroke: #2a2e36; }
+  .pot-grid { stroke: #2a2e36; }
+  .pot-dot-met { stroke: #0f1115; }
+  .pot-dot-skipped { stroke: #0f1115; }
+  .pot-legend { color: #8892a6; }
+}
 """
 
 
@@ -1601,6 +1629,189 @@ def render_hash(h: str | None) -> str:
         f'<code class="copy" data-full="{html_mod.escape(h)}" '
         f'title="click to copy">{html_mod.escape(short(h))}</code>'
     )
+
+
+def render_proposals_over_time(report: dict[str, Any]) -> str:
+    """
+    Build a self-contained inline SVG scatter chart of daily MET vs SKIPPED
+    proposal outcomes for the per-validator report.
+
+    Bins by UTC day across the full window (window.from_time → window.to_time).
+    Two series: green dots for MET ("created"), red dots for SKIPPED.
+    INCONCLUSIVE / NA are intentionally excluded — they are not "created"
+    or "skipped" by user definition.
+    """
+    w = report["window"]
+    quorums = report.get("detail", {}).get("member_quorums", []) or []
+
+    t_start = parse_ts(w["from_time"])
+    t_end = parse_ts(w["to_time"])
+    day_start = datetime(t_start.year, t_start.month, t_start.day, tzinfo=timezone.utc)
+    day_end = datetime(t_end.year, t_end.month, t_end.day, tzinfo=timezone.utc)
+    if day_end < day_start:
+        day_end = day_start
+
+    days: list[datetime] = []
+    cur = day_start
+    while cur <= day_end:
+        days.append(cur)
+        cur = cur + timedelta(days=1)
+
+    met_by_day: dict[str, int] = {}
+    skipped_by_day: dict[str, int] = {}
+    for q in quorums:
+        ts = q.get("expected_slot_time")
+        if not ts:
+            continue
+        try:
+            dt = parse_ts(ts)
+        except (ValueError, TypeError):
+            continue
+        key = dt.strftime("%Y-%m-%d")
+        st = q.get("status")
+        if st == "MET":
+            met_by_day[key] = met_by_day.get(key, 0) + 1
+        elif st == "SKIPPED":
+            skipped_by_day[key] = skipped_by_day.get(key, 0) + 1
+
+    total_events = sum(met_by_day.values()) + sum(skipped_by_day.values())
+
+    section_open = '<section class="card">\n  <h2>Proposals over time</h2>\n'
+    section_close = "</section>\n"
+
+    if total_events == 0:
+        return (
+            section_open
+            + '  <p class="muted">No proposal events recorded in this window.</p>\n'
+            + section_close
+        )
+
+    max_count = 0
+    for d_iso in days:
+        k = d_iso.strftime("%Y-%m-%d")
+        max_count = max(max_count, met_by_day.get(k, 0), skipped_by_day.get(k, 0))
+    y_max = max_count + 1
+
+    # SVG geometry: viewBox-based, responsive width via CSS (.pot-svg).
+    vb_w = 900
+    vb_h = 240
+    margin_l = 40
+    margin_r = 16
+    margin_t = 14
+    margin_b = 32
+    plot_w = vb_w - margin_l - margin_r
+    plot_h = vb_h - margin_t - margin_b
+
+    n_days = len(days)
+    if n_days == 1:
+        # Avoid division-by-zero; pin the single day to plot centre.
+        def x_for(i: int) -> float:
+            return margin_l + plot_w / 2.0
+    else:
+        step = plot_w / (n_days - 1)
+
+        def x_for(i: int) -> float:
+            return margin_l + i * step
+
+    def y_for(v: int) -> float:
+        if y_max <= 0:
+            return margin_t + plot_h
+        return margin_t + plot_h - (v / y_max) * plot_h
+
+    # Y ticks: integer counts, capped to a reasonable density.
+    if y_max <= 8:
+        y_ticks = list(range(0, y_max + 1))
+    else:
+        # ~6 ticks
+        step_y = max(1, y_max // 6)
+        y_ticks = list(range(0, y_max + 1, step_y))
+        if y_ticks[-1] != y_max:
+            y_ticks.append(y_max)
+
+    # X ticks: every ~5–7 days, always include first and last.
+    if n_days <= 1:
+        x_tick_idxs = [0]
+    else:
+        target_ticks = 7
+        stride = max(1, (n_days - 1) // (target_ticks - 1))
+        x_tick_idxs = list(range(0, n_days, stride))
+        if x_tick_idxs[-1] != n_days - 1:
+            x_tick_idxs.append(n_days - 1)
+
+    parts: list[str] = []
+    parts.append(
+        f'<div class="pot-wrap"><svg class="pot-svg" viewBox="0 0 {vb_w} {vb_h}" '
+        'preserveAspectRatio="none" role="img" '
+        'aria-label="Daily MET vs SKIPPED proposal outcomes">'
+    )
+
+    # Y gridlines + tick labels.
+    parts.append('<g class="pot-axis">')
+    for v in y_ticks:
+        y = y_for(v)
+        parts.append(
+            f'<line class="pot-grid" x1="{margin_l}" y1="{y:.1f}" '
+            f'x2="{margin_l + plot_w}" y2="{y:.1f}"/>'
+        )
+        parts.append(
+            f'<text x="{margin_l - 6}" y="{y + 3:.1f}" text-anchor="end">{v}</text>'
+        )
+
+    # X axis baseline.
+    y_base = margin_t + plot_h
+    parts.append(
+        f'<line x1="{margin_l}" y1="{y_base:.1f}" '
+        f'x2="{margin_l + plot_w}" y2="{y_base:.1f}"/>'
+    )
+    # Y axis line.
+    parts.append(
+        f'<line x1="{margin_l}" y1="{margin_t}" x2="{margin_l}" y2="{y_base:.1f}"/>'
+    )
+
+    # X tick labels (YYYY-MM-DD).
+    for i in x_tick_idxs:
+        x = x_for(i)
+        label = days[i].strftime("%Y-%m-%d")
+        parts.append(
+            f'<line x1="{x:.1f}" y1="{y_base:.1f}" x2="{x:.1f}" y2="{y_base + 4:.1f}"/>'
+        )
+        parts.append(
+            f'<text x="{x:.1f}" y="{y_base + 16:.1f}" '
+            f'text-anchor="middle">{label}</text>'
+        )
+    parts.append("</g>")
+
+    # Dots. Slight x-offset between MET (-2px) and SKIPPED (+2px) to
+    # disambiguate when both are present on the same day.
+    for i, day in enumerate(days):
+        k = day.strftime("%Y-%m-%d")
+        m = met_by_day.get(k, 0)
+        sk = skipped_by_day.get(k, 0)
+        x = x_for(i)
+        if m > 0:
+            cx = x - 2.0 if sk > 0 else x
+            cy = y_for(m)
+            parts.append(
+                f'<circle class="pot-dot-met" cx="{cx:.1f}" cy="{cy:.1f}" r="3.5">'
+                f"<title>{k}: created={m}, skipped={sk}</title></circle>"
+            )
+        if sk > 0:
+            cx = x + 2.0 if m > 0 else x
+            cy = y_for(sk)
+            parts.append(
+                f'<circle class="pot-dot-skipped" cx="{cx:.1f}" cy="{cy:.1f}" r="3.5">'
+                f"<title>{k}: created={m}, skipped={sk}</title></circle>"
+            )
+
+    parts.append("</svg>")
+    parts.append(
+        '<div class="pot-legend">'
+        '<span><span class="sw sw-met"></span>Created (MET)</span>'
+        '<span><span class="sw sw-skipped"></span>Skipped</span>'
+        "</div></div>"
+    )
+
+    return section_open + "  " + "".join(parts) + "\n" + section_close
 
 
 def render_html(report: dict[str, Any]) -> str:
@@ -1705,6 +1916,8 @@ def render_html(report: dict[str, Any]) -> str:
             "</tr>"
         )
 
+    proposals_over_time_html = render_proposals_over_time(report)
+
     # Strip the internal _pose_state_at_tip blob from the embedded public JSON.
     public_report = {k: v for k, v in report.items() if not k.startswith("_")}
     json_blob = json.dumps(public_report, indent=2).replace("</", "<\\/")
@@ -1748,6 +1961,7 @@ def render_html(report: dict[str, Any]) -> str:
   </div>
 </section>
 
+{proposals_over_time_html}
 <section class="card">
   <h2>Eligibility</h2>
   <div class="grid-4">
